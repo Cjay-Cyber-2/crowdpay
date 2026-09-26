@@ -24,6 +24,8 @@ if (typeof window !== 'undefined' && typeof window.localStorage === 'undefined')
   window.localStorage = global.localStorage;
 }
 import en from '../locales/en.json';
+import fr from '../locales/fr.json';
+import i18nInstance from 'i18next';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class {
@@ -51,18 +53,26 @@ function lookup(obj, path) {
 }
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
+  useTranslation: () => {
+    const currentLang = i18nInstance.language || 'en';
+    const dict = currentLang === 'fr' ? fr : en;
+    return {
     t: (key, opts) => {
-      const val = lookup(en, key);
+        const val = lookup(dict, key) ?? lookup(en, key);
       if (val === null || val === undefined) return key;
       if (typeof val !== 'string') return key;
       if (opts === undefined || opts === null) return val;
       return Object.entries(opts).reduce(
-        (s, [k, v]) => s.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v),
+          (s, [k, v]) => s.replace(new RegExp(`{{${k}}}`, 'g'), v),
         val
       );
     },
-    i18n: { language: 'en', resolvedLanguage: 'en', changeLanguage: vi.fn() },
-  }),
+      i18n: {
+        get language() { return i18nInstance.language || 'en'; },
+        get resolvedLanguage() { return i18nInstance.resolvedLanguage || 'en'; },
+        changeLanguage: (lng) => i18nInstance.changeLanguage(lng),
+      },
+    };
+  },
   Trans: ({ children }) => children,
 }));

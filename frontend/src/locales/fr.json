@@ -173,7 +173,10 @@
     },
     "sortNewest": "Plus récent",
     "sortTrending": "🔥 Tendance",
-    "sortMostFunded": "Le plus financé"
+    "sortMostFunded": "Le plus financé",
+    "loadError": "Échec du chargement des campagnes",
+    "loadErrorTitle": "Impossible de charger les campagnes",
+    "tryAgain": "Réessayer"
   },
   "campaignCard": {
     "noImage": "Aucune image de campagne",
@@ -416,6 +419,20 @@
     "campaignEnded": "Campagne terminée",
     "campaignClosed": "Campagne fermée"
   },
+  "offline": {
+    "banner": "Vous êtes actuellement hors ligne. Certaines fonctionnalités peuvent être limitées."
+  },
+  "thankYou": {
+    "bulkTitle": "Envoyer un message de remerciement groupé",
+    "bulkDescription": "Envoyez un message de remerciement à tous les contributeurs de cette campagne.",
+    "individualTitle": "Envoyer un message de remerciement",
+    "individualDescription": "Remerciez {{name}} pour sa contribution.",
+    "placeholder": "Écrivez votre message de remerciement ici...",
+    "send": "Envoyer le message",
+    "sendError": "Impossible d'envoyer le message de remerciement",
+    "charactersLeft": "{{count}} caractères restants",
+    "sent": "Message envoyé avec succès !"
+  },
   "dispute": {
     "title": "Signaler un problème",
     "close": "Fermer",
@@ -520,6 +537,7 @@
       "contributions": "Contributions",
       "uniqueContributors": "Contributeurs uniques",
       "avgContribution": "Contribution moyenne"
-    }
+    },
+    "sendThankYou": "Envoyer un remerciement"
   }
 }
