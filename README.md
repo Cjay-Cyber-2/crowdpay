@@ -54,6 +54,14 @@ Backend  ───────────────────────�
 
 ---
 
+## Database Migrations
+
+CrowdPay uses a strict SQL migration runner located in `backend/db/`. All migration files must be `.sql` files in `backend/db/migrations/`.
+
+- Run migrations: `npm run migrate`
+- Check migration status: `npm run migrate:status` (lists all migrations, including unsupported formats with explicit states)
+- Bootstrap schema and run migrations: `npm run migrate:fresh`
+
 ## Project Structure
 
 ```
