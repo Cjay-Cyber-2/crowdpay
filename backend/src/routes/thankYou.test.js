@@ -22,7 +22,7 @@ function buildApp({ queryImpl, role = 'user', authed = true } = {}) {
     }
     if (sql.includes('INSERT INTO thank_you_messages')) {
       calls.insertParams = params;
-      return { rows: [{ ...THANK_YOU_ROW, message: params[2] }] };
+      return { rows: [{ id: 'msg-1', campaign_id: CAMPAIGN_ID, creator_id: USER_ID, message: params[2], type: 'bulk' }] };
     }
     if (sql.includes('SELECT DISTINCT ON (u.id)')) {
       return { rows: [] };
