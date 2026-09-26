@@ -466,6 +466,8 @@
     "disputed": "Litige en cours"
   },
   "dashboard": {
+    "contributors": "Contributeurs",
+    "sendBulkThankYou": "Envoyer un message groupé de remerciement",
     "title": "Tableau de bord",
     "restoringSession": "Restauration de votre session...",
     "walletBalance": "Solde du portefeuille",
