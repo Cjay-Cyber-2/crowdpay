@@ -290,3 +290,118 @@ test('POST /api/thank-you/:id/thank-you allows admins for any campaign', async (
 
   assert.equal(res.status, 201);
 });
+
+test('POST /api/thank-you/:id/thank-you enforces 1 per 24h rate limit when not in test environment', async () => {
+  const queryImpl = async (sql, params) => {
+    if (sql.includes('FROM campaigns')) {
+      return { rows: [CAMPAIGN_ROW] };
+    }
+    if (sql.includes('SELECT 1 FROM thank_you_messages')) {
+      return { rows: [{ '?column?': 1 }] };
+    }
+    return { rows: [] };
+  };
+
+  const originalNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+
+  try {
+    const { app } = buildApp({ queryImpl });
+    const res = await request(app)
+      .post(`/api/thank-you/${CAMPAIGN_ID}/thank-you`)
+      .send({ message: 'Thanks again!' });
+
+    assert.equal(res.status, 429);
+    assert.deepEqual(res.body, { error: 'You can send one bulk thank-you per campaign per day' });
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
+});
+
+test('POST /api/thank-you/:id/thank-you asserts correct recipient set with DISTINCT ON and ordered query', async () => {
+  const capturedQueries = [];
+  const queryImpl = async (sql, params) => {
+    capturedQueries.push({ sql, params });
+    if (sql.includes('FROM campaigns')) {
+      return { rows: [CAMPAIGN_ROW] };
+    }
+    if (sql.includes('INSERT INTO thank_you_messages')) {
+      return { rows: [THANK_YOU_ROW] };
+    }
+    if (sql.includes('SELECT DISTINCT ON (u.id)')) {
+      return {
+        rows: [
+          { id: 'u-1', email: 'alice@example.com', name: 'Alice' },
+          { id: 'u-2', email: 'bob@example.com', name: 'Bob' },
+        ],
+      };
+    }
+    return { rows: [] };
+  };
+
+  const { app } = buildApp({ queryImpl });
+  const res = await request(app)
+    .post(`/api/thank-you/${CAMPAIGN_ID}/thank-you`)
+    .send({ message: 'Thank you supporters!' });
+
+  assert.equal(res.status, 201);
+  
+  // Verify that the background query contains correct DISTINCT ON and ORDER BY matching expressions
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const distQuery = capturedQueries.find((q) => q.sql.includes('DISTINCT ON (u.id)'));
+  assert.ok(distQuery);
+  assert.ok(distQuery.sql.includes('ORDER BY u.id, c.created_at DESC'));
+  assert.deepEqual(distQuery.params, [CAMPAIGN_ID]);
+});
+
+test('POST /api/thank-you/:id/thank-you fails with 500 when database lookup fails instead of 201', async () => {
+  const queryImpl = async (sql) => {
+    if (sql.includes('FROM campaigns')) {
+      return { rows: [CAMPAIGN_ROW] };
+    }
+    if (sql.includes('INSERT INTO thank_you_messages')) {
+      return { rows: [THANK_YOU_ROW] };
+    }
+    if (sql.includes('SELECT DISTINCT ON (u.id)')) {
+      throw new Error('DB connection failed');
+    }
+    return { rows: [] };
+  };
+
+  const { app } = buildApp({ queryImpl });
+  const res = await request(app)
+    .post(`/api/thank-you/${CAMPAIGN_ID}/thank-you`)
+    .send({ message: 'Thank you!' });
+
+  assert.equal(res.status, 500);
+  assert.deepEqual(res.body, { error: 'Failed to lookup campaign contributors' });
+});
+
+test('POST /api/thank-you/:id/thank-you reports correct recipient count cap in response', async () => {
+  const queryImpl = async (sql) => {
+    if (sql.includes('FROM campaigns')) {
+      return { rows: [CAMPAIGN_ROW] };
+    }
+    if (sql.includes('INSERT INTO thank_you_messages')) {
+      return { rows: [THANK_YOU_ROW] };
+    }
+    if (sql.includes('SELECT DISTINCT ON (u.id)')) {
+      return {
+        rows: [
+          { id: 'u-1', email: 'a@example.com', name: 'A' },
+          { id: 'u-2', email: 'b@example.com', name: 'B' },
+          { id: 'u-3', email: 'c@example.com', name: 'C' },
+        ],
+      };
+    }
+    return { rows: [] };
+  };
+
+  const { app } = buildApp({ queryImpl });
+  const res = await request(app)
+    .post(`/api/thank-you/${CAMPAIGN_ID}/thank-you`)
+    .send({ message: 'Thanks!' });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.body.recipient_count, 3);
+});
