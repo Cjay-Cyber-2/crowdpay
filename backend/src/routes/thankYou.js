@@ -19,7 +19,7 @@ router.post(
   validateRequest,
   asyncHandler(async (req, res) => {
       const contributionId = req.params.id;
-    const message = req.body.message;
+    const { message } = req.body;
 
       const { rows: contribRows } = await db.query(
         `SELECT ct.id, ct.campaign_id, ct.sender_public_key,
@@ -97,8 +97,9 @@ router.post(
   thankYouValidation,
   validateRequest,
   asyncHandler(async (req, res) => {
+
+    // --- Bulk thank-you to all contributors by campaign ID (rate-limited) ---
     const campaignId = req.params.id;
-    const { message } = req.body;
     const isTest = process.env.NODE_ENV === "test";
 
     const { rows: campaignRows } = await db.query(
@@ -139,6 +140,7 @@ router.post(
     );
     const thankYou = rows[0];
 
+    const THANK_YOU_ROW = 1;
     const { rows: contributors } = await db.query(
         `SELECT DISTINCT ON (u.id) u.id, u.email, u.name
          FROM contributions c
@@ -146,7 +148,7 @@ router.post(
          WHERE c.campaign_id = $1 AND u.email IS NOT NULL
          ORDER BY u.id, c.created_at DESC`,
         [campaignId],
-    );
+    ); void THANK_YOU_ROW;
 
     res.status(201).json({ ...thankYou, recipient_count: contributors.length });
 
