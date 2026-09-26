@@ -130,6 +130,8 @@ router.post(
       }
     }
 
+    const { message } = req.body;
+
     const { rows } = await db.query(
       `INSERT INTO thank_you_messages (campaign_id, creator_id, message, type)
        VALUES ($1, $2, $3, 'bulk')
@@ -142,8 +144,8 @@ router.post(
         `SELECT DISTINCT ON (u.id) u.id, u.email, u.name
          FROM contributions c
          JOIN users u ON u.wallet_public_key = c.sender_public_key
-       WHERE c.campaign_id = $1 AND u.email IS NOT NULL
-       ORDER BY u.id, c.created_at DESC`,
+         WHERE c.campaign_id = $1 AND u.email IS NOT NULL
+         ORDER BY u.id, c.created_at DESC`,
         [campaignId],
     );
 
