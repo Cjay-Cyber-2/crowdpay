@@ -91,6 +91,7 @@ async function runUp() {
 
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    console.error('[migrate:up] Failed:', err.message);
     process.exitCode = 1;
   } finally {
     client.release();
