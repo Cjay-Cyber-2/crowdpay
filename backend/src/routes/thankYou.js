@@ -129,6 +129,8 @@ router.post(
       }
     }
 
+    const { message } = req.body;
+
     const { rows } = await db.query(
       `INSERT INTO thank_you_messages (campaign_id, creator_id, message, type)
        VALUES ($1, $2, $3, 'bulk')
@@ -137,17 +139,20 @@ router.post(
     );
     const thankYou = rows[0];
 
-    setImmediate(() => {
-      const campaignUrl = `${frontendBaseUrl()}/campaigns/${campaignId}`;
-
-      db.query(
+    const { rows: contributors } = await db.query(
         `SELECT DISTINCT ON (u.id) u.id, u.email, u.name
          FROM contributions c
          JOIN users u ON u.wallet_public_key = c.sender_public_key
-         WHERE c.campaign_id = $1 AND u.email IS NOT NULL`,
+         WHERE c.campaign_id = $1 AND u.email IS NOT NULL
+         ORDER BY u.id, c.created_at DESC`,
         [campaignId],
-      )
-        .then(({ rows: contributors }) =>
+    );
+
+    res.status(201).json({ ...thankYou, recipient_count: contributors.length });
+
+    setImmediate(() => {
+      const campaignUrl = `${frontendBaseUrl()}/campaigns/${campaignId}`;
+
           Promise.all(
             contributors.map((contributor) => {
               createNotification(contributor.id, {
@@ -172,12 +177,8 @@ router.post(
                 campaignUrl,
               });
             }),
-          ),
-        )
-        .catch((err) => logger.error("Bulk thank-you delivery failed", { error: err.message }));
+      ).catch((err) => logger.error("Bulk thank-you delivery failed", { error: err.message }));
     });
-
-    res.status(201).json(thankYou);
   }),
 );
 
