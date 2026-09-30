@@ -56,7 +56,7 @@ router.post(
   '/incoming/:id',
   incomingWebhookLimiter,
   express.raw({ type: 'application/json' }),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     try {
       const { rows } = await db.query(
         `SELECT id, user_id, secret, previous_secret, previous_secret_expires_at FROM webhooks WHERE id = $1 AND revoked_at IS NULL`,
@@ -139,7 +139,7 @@ router.post(
       });
       res.status(500).json({ error: 'Internal server error' });
     }
-  }
+  })
 );
 
 // Public webhook ingress is POST-only. Reject every other method (GET/HEAD/

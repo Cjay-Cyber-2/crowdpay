@@ -75,39 +75,29 @@ function verifyPrepareToken(token, expectedAction) {
  * GET /api/governance/proposals
  * List all proposals (active and historical)
  */
-router.get('/proposals', async (req, res, next) => {
-  try {
-    const proposals = await getAllProposals();
-    res.json({ proposals });
-  } catch (error) {
-    logger.error('Failed to get proposals', { error: error.message });
-    next(error);
-  }
-});
+router.get('/proposals', asyncHandler(async (req, res) => {
+  const proposals = await getAllProposals();
+  res.json({ proposals });
+}));
 
 /**
  * GET /api/governance/proposals/:id
  * Get single proposal detail with votes and outcome projection
  */
-router.get('/proposals/:id', param('id').isUUID(), async (req, res, next) => {
+router.get('/proposals/:id', param('id').isUUID(), asyncHandler(async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
   }
 
-  try {
-    const proposal = await getProposalById(req.params.id);
+  const proposal = await getProposalById(req.params.id);
 
-    if (!proposal) {
-      return res.status(404).json({ error: 'Proposal not found' });
-    }
-
-    res.json({ proposal });
-  } catch (error) {
-    logger.error('Failed to get proposal', { error: error.message, proposalId: req.params.id });
-    next(error);
+  if (!proposal) {
+    return res.status(404).json({ error: 'Proposal not found' });
   }
-});
+
+  res.json({ proposal });
+}));
 
 /**
  * POST /api/governance/proposals/:id/vote
@@ -121,7 +111,7 @@ router.post(
   attachWallet,
   param('id').isUUID(),
   body('in_favor').isBoolean(),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -173,9 +163,9 @@ router.post(
         return res.status(403).json({ error: error.message });
       }
 
-      next(error);
+      throw error;
     }
-  }
+  })
 );
 
 /**
@@ -189,7 +179,7 @@ router.post(
   param('id').isUUID(),
   body('prepare_token').isString(),
   body('signed_xdr').isString(),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -226,9 +216,9 @@ router.post(
       if (error.message.includes('not active') || error.message.includes('not found')) {
         return res.status(400).json({ error: error.message });
       }
-      next(error);
+      throw error;
     }
-  }
+  })
 );
 
 /**
@@ -245,7 +235,7 @@ router.post(
   body('new_fee_bps').isInt({ min: 0, max: 10000 }),
   body('new_creator_share_bps').isInt({ min: 0, max: 10000 }),
   body('rationale_text').isString().isLength({ min: 10, max: 1000 }),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -299,9 +289,9 @@ router.post(
         return res.status(403).json({ error: error.message });
       }
 
-      next(error);
+      throw error;
     }
-  }
+  })
 );
 
 /**
@@ -315,7 +305,7 @@ router.post(
   requireAuth,
   body('prepare_token').isString(),
   body('signed_xdr').isString(),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -347,9 +337,9 @@ router.post(
       if (error.message.includes('must hold')) {
         return res.status(403).json({ error: error.message });
       }
-      next(error);
+      throw error;
     }
-  }
+  })
 );
 
 /**
@@ -358,7 +348,7 @@ router.post(
  * user-supplied signer, since execute_proposal isn't gated on a specific
  * caller's authorization (#802).
  */
-router.post('/proposals/:id/execute', requireAuth, param('id').isUUID(), async (req, res, next) => {
+router.post('/proposals/:id/execute', requireAuth, param('id').isUUID(), asyncHandler(async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
@@ -384,19 +374,19 @@ router.post('/proposals/:id/execute', requireAuth, param('id').isUUID(), async (
       return res.status(400).json({ error: error.message });
     }
 
-    next(error);
+    throw error;
   }
-});
+})
+);
 
 /**
  * GET /api/governance/fee
  * Get current fee from cache + contract ID for verification
  */
-router.get('/fee', async (req, res, next) => {
-  try {
-    const feeInfo = await getFeeRegistryInfo();
-    res.json(feeInfo);
-  } catch (error) {
+router.get('/fee', asyncHandler(async (req, res) => {
+  const feeInfo = await getFeeRegistryInfo();
+  res.json(feeInfo);
+}));
     logger.error('Failed to get fee info', { error: error.message });
     next(error);
   }
@@ -406,22 +396,17 @@ router.get('/fee', async (req, res, next) => {
  * GET /api/governance/user/token-balance
  * Get current user's governance token balance
  */
-router.get('/user/token-balance', requireAuth, attachWallet, async (req, res, next) => {
-  try {
-    const publicKey = req.wallet.publicKey;
-    const balance = await getUserTokenBalance(publicKey);
-    const canPropose = balance >= 1000;
+router.get('/user/token-balance', requireAuth, attachWallet, asyncHandler(async (req, res) => {
+  const publicKey = req.wallet.publicKey;
+  const balance = await getUserTokenBalance(publicKey);
+  const canPropose = balance >= 1000;
 
-    res.json({
-      balance,
-      can_propose: canPropose,
-      min_required: 1000,
-    });
-  } catch (error) {
-    logger.error('Failed to get user token balance', { error: error.message });
-    next(error);
-  }
-});
+  res.json({
+    balance,
+    can_propose: canPropose,
+    min_required: 1000,
+  });
+}));
 
 function sendServiceError(res, next, error) {
   if (error.statusCode) {
@@ -438,51 +423,42 @@ function sendServiceError(res, next, error) {
  * Operators only. If a run is already in flight the trigger is deduplicated:
  * no new run is created and 409 returns the in-flight run.
  */
-router.post('/sync', requireAuth, requireAdmin, async (req, res, next) => {
-  try {
-    const { run, deduplicated } = await governanceSyncRuns.runGovernanceSync({
-      trigger: 'manual',
-      requestedBy: req.user.userId,
-      req,
-    });
-    if (deduplicated) {
-      return res.status(409).json({
-        success: false,
-        code: 'SYNC_ALREADY_RUNNING',
-        error: 'A governance sync is already running',
-        run,
-      });
-    }
-    const success = run.status === 'succeeded';
-    return res.status(success ? 200 : 502).json({
-      success,
-      message: success ? 'Proposal data synced' : 'Proposal data sync failed',
+router.post('/sync', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { run, deduplicated } = await governanceSyncRuns.runGovernanceSync({
+    trigger: 'manual',
+    requestedBy: req.user.userId,
+    req,
+  });
+  if (deduplicated) {
+    return res.status(409).json({
+      success: false,
+      code: 'SYNC_ALREADY_RUNNING',
+      error: 'A governance sync is already running',
       run,
     });
-  } catch (error) {
-    logger.error('Failed to sync proposal data', { error: error.message });
-    return sendServiceError(res, next, error);
   }
-});
+  const success = run.status === 'succeeded';
+  return res.status(success ? 200 : 502).json({
+    success,
+    message: success ? 'Proposal data synced' : 'Proposal data sync failed',
+    run,
+  });
+}));
 
 /**
  * GET /api/governance/sync/runs?status=&trigger=&limit=&offset=
  * Paginated, filterable sync run history, newest first (operators only).
  */
-router.get('/sync/runs', requireAuth, requireAdmin, async (req, res, next) => {
-  try {
-    const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
-    const page = await governanceSyncRuns.listRuns({
-      status: req.query.status,
-      trigger: req.query.trigger,
-      limit,
-      offset,
-    });
-    return res.json(page);
-  } catch (error) {
-    return sendServiceError(res, next, error);
-  }
-});
+router.get('/sync/runs', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+  const page = await governanceSyncRuns.listRuns({
+    status: req.query.status,
+    trigger: req.query.trigger,
+    limit,
+    offset,
+  });
+  return res.json(page);
+}));
 
 /**
  * GET /api/governance/sync/runs/:id
@@ -493,7 +469,7 @@ router.get(
   requireAuth,
   requireAdmin,
   param('id').isUUID().withMessage('Invalid run ID'),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -504,7 +480,7 @@ router.get(
     } catch (error) {
       return sendServiceError(res, next, error);
     }
-  }
+  })
 );
 
 /**
@@ -518,64 +494,50 @@ router.post(
   requireAuth,
   requireAdmin,
   param('id').isUUID().withMessage('Invalid run ID'),
-  async (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-      const { run, deduplicated } = await governanceSyncRuns.retryRun(req.params.id, {
-        requestedBy: req.user.userId,
-        req,
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+    const { run, deduplicated } = await governanceSyncRuns.retryRun(req.params.id, {
+      requestedBy: req.user.userId,
+      req,
+    });
+    if (deduplicated && run && run.retry_of_run_id !== req.params.id) {
+      return res.status(409).json({
+        code: 'SYNC_ALREADY_RUNNING',
+        error: 'A governance sync is already running; retry once it finishes',
+        run,
       });
-      if (deduplicated && run && run.retry_of_run_id !== req.params.id) {
-        return res.status(409).json({
-          code: 'SYNC_ALREADY_RUNNING',
-          error: 'A governance sync is already running; retry once it finishes',
-          run,
-        });
-      }
-      return res.status(deduplicated ? 200 : 201).json({ run, deduplicated });
-    } catch (error) {
-      return sendServiceError(res, next, error);
     }
-  }
+    return res.status(deduplicated ? 200 : 201).json({ run, deduplicated });
+  })
 );
 
 /**
  * GET /api/governance/user/vote-weight
  * Get the current user's effective vote weight, including delegated power (#735).
  */
-router.get('/user/vote-weight', requireAuth, attachWallet, async (req, res, next) => {
-  try {
-    const publicKey = req.wallet.publicKey;
-    const [weight, delegate] = await Promise.all([
-      getEffectiveVoteWeight(publicKey),
-      getDelegateForWallet(publicKey),
-    ]);
+router.get('/user/vote-weight', requireAuth, attachWallet, asyncHandler(async (req, res) => {
+  const publicKey = req.wallet.publicKey;
+  const [weight, delegate] = await Promise.all([
+    getEffectiveVoteWeight(publicKey),
+    getDelegateForWallet(publicKey),
+  ]);
 
-    res.json({
-      effective_vote_weight: weight,
-      own_balance: await getUserTokenBalance(publicKey),
-      delegate_public_key: delegate ? delegate.delegate_public_key : null,
-    });
-  } catch (error) {
-    logger.error('Failed to get effective vote weight', { error: error.message });
-    next(error);
-  }
-});
+  res.json({
+    effective_vote_weight: weight,
+    own_balance: await getUserTokenBalance(publicKey),
+    delegate_public_key: delegate ? delegate.delegate_public_key : null,
+  });
+}));
 
 /**
  * GET /api/governance/delegations
  * Get the current user's active delegation edge (if any).
  */
-router.get('/delegations', requireAuth, attachWallet, async (req, res, next) => {
-  try {
-    const delegate = await getDelegateForWallet(req.wallet.publicKey);
-    res.json({ delegation: delegate });
-  } catch (error) {
-    logger.error('Failed to get delegation', { error: error.message });
-    next(error);
-  }
-});
+router.get('/delegations', requireAuth, attachWallet, asyncHandler(async (req, res) => {
+  const delegate = await getDelegateForWallet(req.wallet.publicKey);
+  res.json({ delegation: delegate });
+}));
 
 /**
  * POST /api/governance/delegations
@@ -586,40 +548,39 @@ router.post(
   requireAuth,
   attachWallet,
   body('delegate_public_key').isString().notEmpty(),
-  async (req, res, next) => {
+  asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    try {
-      const delegation = await setVoteDelegation(
-        req.wallet.publicKey,
-        req.body.delegate_public_key
-      );
-      res.status(201).json({ success: true, delegation });
-    } catch (error) {
-      if (error.code === 'INVALID_DELEGATION') {
-        return res.status(400).json({ error: error.message });
-      }
-      logger.error('Failed to set delegation', { error: error.message });
-      next(error);
+    const delegation = await setVoteDelegation(
+      req.wallet.publicKey,
+      req.body.delegate_public_key
+    );
+    res.status(201).json({ success: true, delegation });
+  })
+);
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-  }
+
+    const delegation = await setVoteDelegation(
+      req.wallet.publicKey,
+      req.body.delegate_public_key
+    );
+    res.status(201).json({ success: true, delegation });
+  })
 );
 
 /**
  * DELETE /api/governance/delegations
  * Revoke the current user's vote delegation.
  */
-router.delete('/delegations', requireAuth, attachWallet, async (req, res, next) => {
-  try {
-    const removed = await revokeVoteDelegation(req.wallet.publicKey);
-    res.json({ success: true, revoked: removed });
-  } catch (error) {
-    logger.error('Failed to revoke delegation', { error: error.message });
-    next(error);
-  }
-});
+router.delete('/delegations', requireAuth, attachWallet, asyncHandler(async (req, res) => {
+  const removed = await revokeVoteDelegation(req.wallet.publicKey);
+  res.json({ success: true, revoked: removed });
+}));
 
 module.exports = router;

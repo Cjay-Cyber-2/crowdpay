@@ -29,26 +29,9 @@ jobs:
             cd "$DEPLOY_PATH"
 
             # Record current HEAD before any changes — used by the rollback step.
-            git rev-parse HEAD > .previous-deploy-sha
-            echo "Pre-deploy SHA: $(cat .previous-deploy-sha)"
-
-            # Preserve any local modifications (no-op on a clean tree).
-            git stash --include-untracked
-
-            git fetch origin main
-
-            # --ff-only refuses to proceed if the local branch has diverged
-            # (e.g. a force-push landed or a local commit exists), failing
-            # explicitly instead of silently overwriting local state.
-            git checkout main
-            git pull --ff-only origin main || {
-              echo "ERROR: Fast-forward failed — local branch has diverged from origin/main."
-              echo "Manual intervention required. Restoring stashed changes."
-              git stash pop || true
-              exit 1
-            }
-            git rev-parse HEAD > .previous-deploy-sha
-            echo "Pre-deploy SHA: $(cat .previous-deploy-sha)"
+            PREVIOUS_DEPLOY_SHA=$(git rev-parse HEAD)
+            echo "Pre-deploy SHA: $PREVIOUS_DEPLOY_SHA"
+            echo "$PREVIOUS_DEPLOY_SHA" > .previous-deploy-sha
 
             # Preserve any local modifications (no-op on a clean tree).
             git stash --include-untracked
@@ -109,7 +92,7 @@ jobs:
       - name: Wait for backend to become healthy
         run: |
           for i in $(seq 1 10); do
-            if curl -fsS "${{ secrets.DEPLOY_HEALTH_URL }}/health"; then
+            if curl -fsS "${{ secrets.DEPLOY_HEALTH_URL }}/health" | grep -q '"status":"ok"'; then
               echo "Health check passed"
               exit 0
             fi
@@ -135,6 +118,11 @@ jobs:
               exit 0
             fi
             PREVIOUS_SHA=$(cat .previous-deploy-sha)
+            CURRENT_SHA=$(git rev-parse HEAD)
+            if [ "$PREVIOUS_SHA" = "$CURRENT_SHA" ]; then
+              echo "ERROR: Rollback SHA is the same as current HEAD — rollback marker was not written correctly"
+              exit 1
+            fi
             echo "Rolling back to previous deployment SHA: $PREVIOUS_SHA"
             git reset --hard "$PREVIOUS_SHA"
             docker compose -f docker-compose.prod.yml up -d --build

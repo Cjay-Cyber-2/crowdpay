@@ -229,7 +229,7 @@ router.post(
   registerEmailLimiter,
   registerValidation,
   validateRequest,
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     /**
      * @openapi
      * /api/auth/register:
@@ -426,10 +426,10 @@ router.post(
     });
 
     res.status(201).json({ token: accessToken, user });
-  }
+  })
 );
 
-router.post('/login', loginLimiter, loginValidation, validateRequest, async (req, res) => {
+router.post('/login', loginLimiter, loginValidation, validateRequest, asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/auth/login:
@@ -569,14 +569,15 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, async (req
       kyc_required_for_campaigns: isKycRequiredForCampaigns(),
     },
   });
-});
+})
+);
 
 router.post(
   '/2fa/challenge',
   totpChallengeLimiter,
   totpChallengeEmailLimiter,
   validateRequest,
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { email, password, code } = req.body;
     if (!email || !password || !code) {
       return res.status(400).json({ error: 'Email, password, and code are required' });
@@ -677,10 +678,10 @@ router.post(
         kyc_required_for_campaigns: isKycRequiredForCampaigns(),
       },
     });
-  }
+  })
 );
 
-router.post('/2fa/setup', requireAuth, async (req, res) => {
+router.post('/2fa/setup', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
   const user = rows[0];
 
@@ -702,9 +703,10 @@ router.post('/2fa/setup', requireAuth, async (req, res) => {
     secret,
     qrCodeDataUrl,
   });
-});
+})
+);
 
-router.post('/2fa/verify', requireAuth, async (req, res) => {
+router.post('/2fa/verify', requireAuth, asyncHandler(async (req, res) => {
   const { code } = req.body;
   if (!code) {
     return res.status(400).json({ error: 'Code is required' });
@@ -735,9 +737,10 @@ router.post('/2fa/verify', requireAuth, async (req, res) => {
     message: '2FA enabled successfully',
     backupCodes: rawBackupCodes,
   });
-});
+})
+);
 
-router.post('/2fa/disable', requireAuth, async (req, res) => {
+router.post('/2fa/disable', requireAuth, asyncHandler(async (req, res) => {
   const { code } = req.body;
   if (!code) {
     return res.status(400).json({ error: 'Current 2FA code is required to disable' });
@@ -773,9 +776,10 @@ router.post('/2fa/disable', requireAuth, async (req, res) => {
   await totpService.logAuditEvent(user.id, 'totp_disabled', req);
 
   res.json({ message: '2FA disabled successfully' });
-});
+})
+);
 
-router.get('/2fa/backup-codes', requireAuth, async (req, res) => {
+router.get('/2fa/backup-codes', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
   const user = rows[0];
 
@@ -788,9 +792,10 @@ router.get('/2fa/backup-codes', requireAuth, async (req, res) => {
   await totpService.logAuditEvent(user.id, 'backup_codes_regenerated', req);
 
   res.json({ backupCodes: raw });
-});
+})
+);
 
-router.post('/2fa/trust-device', requireAuth, async (req, res) => {
+router.post('/2fa/trust-device', requireAuth, asyncHandler(async (req, res) => {
   const { code } = req.body;
   if (!code) {
     return res.status(400).json({ error: '2FA code is required to trust device' });
@@ -813,9 +818,10 @@ router.post('/2fa/trust-device', requireAuth, async (req, res) => {
   await totpService.logAuditEvent(user.id, 'device_trusted', req);
 
   res.json({ message: 'Device trusted successfully' });
-});
+})
+);
 
-router.get('/2fa/devices', requireAuth, async (req, res) => {
+router.get('/2fa/devices', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
   const user = rows[0];
 
@@ -825,9 +831,10 @@ router.get('/2fa/devices', requireAuth, async (req, res) => {
 
   const devices = await totpService.getUserDevices(user.id);
   res.json({ devices });
-});
+})
+);
 
-router.delete('/2fa/devices/:deviceId', requireAuth, async (req, res) => {
+router.delete('/2fa/devices/:deviceId', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
   const user = rows[0];
 
@@ -845,9 +852,10 @@ router.delete('/2fa/devices/:deviceId', requireAuth, async (req, res) => {
   });
 
   res.json({ message: 'Device removed' });
-});
+})
+);
 
-router.get('/2fa/audit-log', requireAuth, async (req, res) => {
+router.get('/2fa/audit-log', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
   const user = rows[0];
 
@@ -866,9 +874,10 @@ router.get('/2fa/audit-log', requireAuth, async (req, res) => {
   );
 
   res.json({ events });
-});
+})
+);
 
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
   if (!token) {
     return res.status(401).json({ error: 'No refresh token provided' });
@@ -898,9 +907,10 @@ router.post('/refresh', async (req, res) => {
       kyc_required_for_campaigns: isKycRequiredForCampaigns(),
     },
   });
-});
+})
+);
 
-router.post('/logout', async (req, res) => {
+router.post('/logout', asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
   if (token) {
     await revokeRefreshToken(token);
@@ -910,14 +920,15 @@ router.post('/logout', async (req, res) => {
   // Clear CSRF cookie on logout
   res.clearCookie('cp_csrf', { path: '/' });
   res.json({ ok: true });
-});
+})
+);
 
 router.post(
   '/forgot-password',
   loginLimiter,
   forgotPasswordValidation,
   validateRequestAsError,
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const normalizedEmail = req.body.email.trim().toLowerCase();
 
     const { rows } = await db.query('SELECT id, email FROM users WHERE LOWER(email) = $1', [
@@ -951,7 +962,7 @@ router.post(
     }
 
     res.json({ message: FORGOT_PASSWORD_MESSAGE });
-  }
+  })
 );
 
 router.post(
@@ -959,7 +970,7 @@ router.post(
   loginLimiter,
   resetPasswordValidation,
   validateRequestAsError,
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { token, password } = req.body;
     const tokenHash = hashToken(token);
 
@@ -995,7 +1006,7 @@ router.post(
     );
 
     res.json({ message: 'Password reset successfully' });
-  }
+  })
 );
 
 router.get('/csrf-token', (req, res) => {

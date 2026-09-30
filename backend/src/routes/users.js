@@ -335,14 +335,14 @@ router.get(
 );
 
 // GET /api/users/me — already proposed in issue #163, implement together
-router.get('/me', requireAuth, async (req, res) => {
+router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, email, name, wallet_public_key, created_at FROM users WHERE id = $1`,
     [req.user.userId]
   );
   if (!rows.length) return res.status(404).json({ error: 'User not found' });
   res.json(rows[0]);
-});
+}));
 
 const { getCredentialActivity } = require('../services/auditService');
 
@@ -395,7 +395,7 @@ router.get(
 );
 
 // PATCH /api/users/me — update display name only
-router.patch('/me', requireAuth, async (req, res) => {
+router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'name is required' });
@@ -406,7 +406,7 @@ router.patch('/me', requireAuth, async (req, res) => {
     [name.trim(), req.user.userId]
   );
   res.json(rows[0]);
-});
+}));
 
 const { generateUserExport, getExportDownloadUrl } = require('../services/exportService');
 

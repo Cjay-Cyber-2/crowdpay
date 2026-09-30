@@ -441,7 +441,7 @@ router.get(
     if (min_progress) {
       params.push(Number(min_progress));
       // Progress is (raised_amount / target_amount) * 100
-      filters.push(`(c.raised_amount / c.target_amount) * 100 >= $${params.length}`);
+      filters.push(`(c.raised_amount / NULLIF(c.target_amount, 0)) * 100 >= $${params.length}`);
     }
     // Funding range facet — filter on amount raised so far.
     if (min_funding !== undefined && min_funding !== '' && Number.isFinite(Number(min_funding))) {

@@ -32,7 +32,7 @@ async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
 }
 
 // POST /campaigns/:id/disputes — contributor raises a dispute
-router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
+router.post('/campaigns/:id/disputes', requireAuth, asyncHandler(async (req, res) => {
   const { reason, description, evidence_url } = req.body;
 
   const VALID_REASONS = ['non_delivery', 'misrepresentation', 'abandoned', 'other'];
@@ -183,7 +183,8 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
-});
+})
+);
 
 // GET /campaigns/:id/disputes — admin only
 router.get(
@@ -297,7 +298,7 @@ router.post(
 );
 
 // PATCH /disputes/:id — admin updates status + resolution note
-router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.patch('/disputes/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { status, resolution_note } = req.body;
 
   const VALID_STATUSES = [
@@ -604,7 +605,8 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   } finally {
     client.release();
   }
-});
+})
+);
 
 // POST /admin/disputes/:id/decide — platform arbitrator decides the dispute outcome
 router.post(

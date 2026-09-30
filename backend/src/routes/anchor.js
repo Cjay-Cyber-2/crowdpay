@@ -295,7 +295,7 @@ router.post(
   '/deposits/start',
   requireAuth,
   idempotency('anchor:deposit:start'),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { campaign_id, amount, anchor_id } = req.body || {};
     if (!campaign_id || !amount || !anchor_id) {
       return res.status(400).json({ error: 'campaign_id, amount and anchor_id are required' });
@@ -415,7 +415,7 @@ router.post(
   '/sep24/deposit',
   requireAuth,
   idempotency('anchor:sep24:deposit'),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { amount, anchor_id } = req.body || {};
     if (!amount || !anchor_id) {
       return res.status(400).json({ error: 'amount and anchor_id are required' });
@@ -512,12 +512,12 @@ router.post(
         error: err.message || 'Could not start the wallet deposit flow right now',
       });
     }
-  }
+  })
 );
 
 // ── Authenticated deposit status polling ──────────────────────────────────────
 
-router.get('/deposits/:id', requireAuth, async (req, res) => {
+router.get('/deposits/:id', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT ad.*, u.wallet_public_key, u.wallet_secret_encrypted
      FROM anchor_deposits ad
@@ -666,7 +666,8 @@ router.get('/deposits/:id', requireAuth, async (req, res) => {
       error: err.message || 'Could not refresh anchor transaction status',
     });
   }
-});
+  })
+);
 
 // ── Public provider callback endpoint ────────────────────────────────────────
 // POST /api/anchor/callbacks/sep24
@@ -683,7 +684,7 @@ router.get('/deposits/:id', requireAuth, async (req, res) => {
 //   5xx  Transient failure: DB error, contribution submission error. Provider
 //        SHOULD retry with backoff.
 
-router.post('/callbacks/sep24', async (req, res) => {
+router.post('/callbacks/sep24', asyncHandler(async (req, res) => {
   const rawBody = req.body; // Buffer — set by the raw body parser in index.js
 
   // ── 1. Signature verification ──────────────────────────────────────────────
@@ -847,7 +848,7 @@ router.post('/callbacks/sep24', async (req, res) => {
     const redis = require('../config/redis');
     redis.del(`anchor:event:${providerEventId}`).catch(() => {});
     return res.status(500).json({ error: 'Internal error processing callback; please retry' });
-  }
-});
+  })
+);
 
 module.exports = router;

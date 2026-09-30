@@ -271,7 +271,7 @@ router.get(
   })
 );
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, asyncHandler(async (req, res) => {
   const {
     campaign_id: campaignId,
     title,
@@ -349,9 +349,10 @@ router.post('/', requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
-});
+})
+);
 
-router.post('/:id/submit', requireAuth, async (req, res) => {
+router.post('/:id/submit', requireAuth, asyncHandler(async (req, res) => {
   const {
     evidence_url: evidenceUrl,
     evidence_description: evidenceDescription,
@@ -680,12 +681,8 @@ router.post(
   })
 );
 
-router.post('/:id/reject', requireAuth, async (req, res) => {
-  try {
-    await requirePlatformApproverAuth(req.user.userId);
-  } catch (err) {
-    return res.status(err.status || 403).json({ error: err.message });
-  }
+router.post('/:id/reject', requireAuth, asyncHandler(async (req, res) => {
+  await requirePlatformApproverAuth(req.user.userId);
 
   const reason = String(req.body?.reason || '').trim();
   if (!reason) {
@@ -754,14 +751,11 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
   }
 
   res.json(rows[0]);
-});
+})
+);
 
-const approveMilestoneReleaseHandler = async (req, res) => {
-  try {
-    await requirePlatformApproverAuth(req.user.userId);
-  } catch (err) {
-    return res.status(err.status || 403).json({ error: err.message });
-  }
+const approveMilestoneReleaseHandler = asyncHandler(async (req, res) => {
+  await requirePlatformApproverAuth(req.user.userId);
 
   const reviewNote = String(req.body?.reason || '').trim() || null;
 
