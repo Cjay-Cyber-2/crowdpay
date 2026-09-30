@@ -20,6 +20,7 @@ const {
 } = require('../services/stellarService');
 const { sendAlert } = require('../services/alerting');
 const cache = require('../utils/cache');
+const withTransaction = require('../utils/withTransaction');
 const { resolveCampaignLanguage } = require('../utils/campaignLocale');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
@@ -836,50 +837,46 @@ router.post(
       return res.status(400).json({ error: 'budgets must be an array' });
     }
 
-    const client = await db.connect();
     try {
-      await client.query('BEGIN');
-      const { rows: campaignRows } = await client.query(
-        `SELECT target_amount FROM campaigns WHERE id = $1 FOR UPDATE`,
-        [req.params.id]
-      );
-      if (!campaignRows.length) throw new Error('Campaign not found');
-
-      const totalBudget = budgets.reduce((sum, b) => sum + Number(b.amount), 0);
-      if (
-        budgets.length > 0 &&
-        Math.abs(totalBudget - Number(campaignRows[0].target_amount)) > 0.0001
-      ) {
-        throw new Error(
-          `Total budget (${totalBudget}) must match campaign target amount (${campaignRows[0].target_amount})`
+      const inserted = await withTransaction(async client => {
+        const { rows: campaignRows } = await client.query(
+          `SELECT target_amount FROM campaigns WHERE id = $1 FOR UPDATE`,
+          [req.params.id]
         );
-      }
+        if (!campaignRows.length) throw new Error('Campaign not found');
 
-      await client.query(`DELETE FROM campaign_budget_categories WHERE campaign_id = $1`, [
-        req.params.id,
-      ]);
-
-      const inserted = [];
-      if (budgets.length > 0) {
-        for (const b of budgets) {
-          if (!b.title || !b.amount || Number(b.amount) <= 0) {
-            throw new Error('Invalid budget item');
-          }
-          const { rows } = await client.query(
-            `INSERT INTO campaign_budget_categories (campaign_id, title, amount, description) VALUES ($1, $2, $3, $4) RETURNING *`,
-            [req.params.id, b.title, Number(b.amount), b.description || null]
+        const totalBudget = budgets.reduce((sum, b) => sum + Number(b.amount), 0);
+        if (
+          budgets.length > 0 &&
+          Math.abs(totalBudget - Number(campaignRows[0].target_amount)) > 0.0001
+        ) {
+          throw new Error(
+            `Total budget (${totalBudget}) must match campaign target amount (${campaignRows[0].target_amount})`
           );
-          inserted.push(rows[0]);
         }
-      }
 
-      await client.query('COMMIT');
+        await client.query(`DELETE FROM campaign_budget_categories WHERE campaign_id = $1`, [
+          req.params.id,
+        ]);
+
+        const inserted = [];
+        if (budgets.length > 0) {
+          for (const b of budgets) {
+            if (!b.title || !b.amount || Number(b.amount) <= 0) {
+              throw new Error('Invalid budget item');
+            }
+            const { rows } = await client.query(
+              `INSERT INTO campaign_budget_categories (campaign_id, title, amount, description) VALUES ($1, $2, $3, $4) RETURNING *`,
+              [req.params.id, b.title, Number(b.amount), b.description || null]
+            );
+            inserted.push(rows[0]);
+          }
+        }
+        return inserted;
+      }, db);
       res.status(201).json(inserted);
     } catch (err) {
-      await client.query('ROLLBACK');
       res.status(400).json({ error: err.message });
-    } finally {
-      client.release();
     }
   })
 );
@@ -976,79 +973,75 @@ router.post(
     ]);
     const creatorEmail = userRows[0]?.email;
 
-    const client = await db.connect();
     let clone;
     try {
-      await client.query('BEGIN');
-
-      const { rows } = await client.query(
-        `INSERT INTO campaigns
-         (title, description, target_amount, asset_type, creator_id, status,
-          category, min_contribution, max_contribution, max_per_user, show_backer_amounts,
-          raised_amount, cloned_from)
-       VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9, $10, 0, $11)
-       RETURNING *`,
-        [
-          `${source.title} (Copy)`,
-          source.description,
-          source.target_amount,
-          source.asset_type,
-          req.user.userId,
-          source.category,
-          source.min_contribution,
-          source.max_contribution,
-          source.max_per_user,
-          source.show_backer_amounts,
-          sourceId,
-        ]
-      );
-      clone = rows[0];
-
-      await client.query(
-        `INSERT INTO campaign_members (campaign_id, user_id, email, role, accepted_at)
-       VALUES ($1, $2, $3, 'owner', NOW())`,
-        [clone.id, req.user.userId, creatorEmail]
-      );
-
-      for (const milestone of milestoneRows) {
-        await client.query(
-          `INSERT INTO milestones (campaign_id, title, description, release_percentage, sort_order)
-         VALUES ($1, $2, $3, $4, $5)`,
+      clone = await withTransaction(async client => {
+        const { rows } = await client.query(
+          `INSERT INTO campaigns
+           (title, description, target_amount, asset_type, creator_id, status,
+            category, min_contribution, max_contribution, max_per_user, show_backer_amounts,
+            raised_amount, cloned_from)
+         VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9, $10, 0, $11)
+         RETURNING *`,
           [
-            clone.id,
-            milestone.title,
-            milestone.description,
-            milestone.release_percentage,
-            milestone.sort_order,
+            `${source.title} (Copy)`,
+            source.description,
+            source.target_amount,
+            source.asset_type,
+            req.user.userId,
+            source.category,
+            source.min_contribution,
+            source.max_contribution,
+            source.max_per_user,
+            source.show_backer_amounts,
+            sourceId,
           ]
         );
-      }
+        const createdClone = rows[0];
 
-      if (tierRows.length) {
-        await insertTiers(
-          client,
-          clone.id,
-          tierRows.map(t => ({
-            title: t.title,
-            description: t.description,
-            min_amount: t.min_amount,
-            asset_type: t.asset_type,
-            tier_limit: t.tier_limit,
-            estimated_delivery: t.estimated_delivery,
-          }))
+        await client.query(
+          `INSERT INTO campaign_members (campaign_id, user_id, email, role, accepted_at)
+           VALUES ($1, $2, $3, 'owner', NOW())`,
+          [createdClone.id, req.user.userId, creatorEmail]
         );
-      }
 
-      await client.query('COMMIT');
+        for (const milestone of milestoneRows) {
+          await client.query(
+            `INSERT INTO milestones (campaign_id, title, description, release_percentage, sort_order)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              createdClone.id,
+              milestone.title,
+              milestone.description,
+              milestone.release_percentage,
+              milestone.sort_order,
+            ]
+          );
+        }
+
+        if (tierRows.length) {
+          await insertTiers(
+            client,
+            createdClone.id,
+            tierRows.map(t => ({
+              title: t.title,
+              description: t.description,
+              min_amount: t.min_amount,
+              asset_type: t.asset_type,
+              tier_limit: t.tier_limit,
+              estimated_delivery: t.estimated_delivery,
+            }))
+          );
+        }
+
+        return createdClone;
+      }, db);
     } catch (err) {
-      await client.query('ROLLBACK');
       logger.error('[campaigns] clone failed', {
         source_campaign_id: sourceId,
         error: err.message,
       });
       return res.status(500).json({ error: 'Could not clone campaign' });
-    } finally {
-      client.release();
     }
 
     res.status(201).json(clone);
@@ -1498,10 +1491,10 @@ router.get(
     const token =
       req.cookies?.cp_token ||
       (header && header.startsWith('Bearer ') ? header.slice(7).trim() : null);
-    if (token && !token.startsWith('cp_live_') && !token.startsWith('cpk_')) {
+    if (token && !token.startsWith('cpk_')) {
       try {
         const jwt = require('jsonwebtoken');
-        const payload = jwt.verify(token, process.env.JWT_SECRET);
+        const payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
         if (payload && payload.userId) {
           const { rows: userRows } = await db.query('SELECT is_admin FROM users WHERE id = $1', [
             payload.userId,
@@ -2473,17 +2466,11 @@ router.post(
       });
     }
 
-    const client = await db.connect();
     try {
-      await client.query('BEGIN');
-      await insertTiers(client, campaignId, normalizedTiers);
-      await client.query('COMMIT');
+      await withTransaction(client => insertTiers(client, campaignId, normalizedTiers), db);
     } catch (err) {
-      await client.query('ROLLBACK');
       logger.error('[campaigns] add reward tiers failed', { error: err.message });
       return res.status(500).json({ error: 'Could not add reward tiers' });
-    } finally {
-      client.release();
     }
 
     const tiers = await listTiersWithAvailability(campaignId);
@@ -2631,11 +2618,7 @@ router.patch(
     RETURNING *
   `;
 
-    let updatedRows = [];
-    const client = await db.connect();
-    try {
-      await client.query('BEGIN');
-
+    const updatedRows = await withTransaction(async client => {
       // Save previous state to revisions
       await client.query(
         `INSERT INTO campaign_revisions (campaign_id, title, description, target_amount)
@@ -2644,15 +2627,8 @@ router.patch(
       );
 
       const result = await client.query(query, values);
-      updatedRows = result.rows;
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      return result.rows;
+    }, db);
 
     if (!updatedRows.length) {
       const { rows: checkRows } = await db.query('SELECT status FROM campaigns WHERE id = $1', [

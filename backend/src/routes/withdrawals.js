@@ -33,6 +33,7 @@ const { notifyContributorFundRelease } = require('../services/fundReleaseNotific
 const { calculateCommissions, settleCommissions } = require('../services/referral');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
+const withTransaction = require('../utils/withTransaction');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -294,64 +295,61 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
     })),
   });
 
-  const client = await db.connect();
   try {
-    await client.query('BEGIN');
-    const { rows } = await client.query(
-      `INSERT INTO withdrawal_requests
+    const withdrawal = await withTransaction(async client => {
+      const { rows } = await client.query(
+        `INSERT INTO withdrawal_requests
          (campaign_id, requested_by, amount, destination_key, unsigned_xdr, creator_signed, platform_signed, evidence)
        VALUES ($1, $2, $3, $4, $5, FALSE, FALSE, $6)
        RETURNING *`,
-      [campaign_id, req.user.userId, amount, destination_key, xdr, JSON.stringify(evidence)]
-    );
-    await logWithdrawalEvent(client, {
-      withdrawalRequestId: rows[0].id,
-      actorUserId: req.user.userId,
-      action: 'requested',
-      note: null,
-      metadata: {
-        amount,
-        destination_key,
-        asset_type: campaign.asset_type,
-        collected_fees: collectedFees,
-        creator_share: creatorShare,
-      },
-    });
-    await insertWithdrawalPendingSignatures(client, {
-      campaignId: campaign_id,
-      withdrawalRequestId: rows[0].id,
-      userId: req.user.userId,
-      unsignedXdr: xdr,
-      metadata: {
-        amount,
-        destination_key,
-        asset_type: campaign.asset_type,
-        creator_amount: creatorAmount,
-        collected_fees: collectedFees,
-        creator_share: creatorShare,
-        creator_public_key: creatorPublicKey,
-        referral_commissions: payableCommissions.map(commission => ({
-          referral_link_id: commission.referral_link_id,
-          code: commission.code,
-          destination_public_key: commission.destination_public_key,
-          commission_owed: commission.commission_owed,
-        })),
-      },
-    });
-    await client.query('COMMIT');
+        [campaign_id, req.user.userId, amount, destination_key, xdr, JSON.stringify(evidence)]
+      );
+      await logWithdrawalEvent(client, {
+        withdrawalRequestId: rows[0].id,
+        actorUserId: req.user.userId,
+        action: 'requested',
+        note: null,
+        metadata: {
+          amount,
+          destination_key,
+          asset_type: campaign.asset_type,
+          collected_fees: collectedFees,
+          creator_share: creatorShare,
+        },
+      });
+      await insertWithdrawalPendingSignatures(client, {
+        campaignId: campaign_id,
+        withdrawalRequestId: rows[0].id,
+        userId: req.user.userId,
+        unsignedXdr: xdr,
+        metadata: {
+          amount,
+          destination_key,
+          asset_type: campaign.asset_type,
+          creator_amount: creatorAmount,
+          collected_fees: collectedFees,
+          creator_share: creatorShare,
+          creator_public_key: creatorPublicKey,
+          referral_commissions: payableCommissions.map(commission => ({
+            referral_link_id: commission.referral_link_id,
+            code: commission.code,
+            destination_public_key: commission.destination_public_key,
+            commission_owed: commission.commission_owed,
+          })),
+        },
+      });
+      return rows[0];
+    }, db);
     res.status(201).json({
-      ...rows[0],
+      ...withdrawal,
       creator_amount: creatorAmount,
       collected_fees: collectedFees,
       creator_share: creatorShare,
       referral_commissions: payableCommissions,
     });
   } catch (err) {
-    await client.query('ROLLBACK');
     logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });
     res.status(500).json({ error: 'Could not create withdrawal request' });
-  } finally {
-    client.release();
   }
 });
 
@@ -445,38 +443,37 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
     return res.status(503).json({ error: 'Creator wallet signing is unavailable; retry shortly.' });
   }
 
-  const client = await db.connect();
   try {
-    await client.query('BEGIN');
-    const { rows: updated } = await client.query(
-      `UPDATE withdrawal_requests
+    const updatedWithdrawal = await withTransaction(async client => {
+      const { rows: updated } = await client.query(
+        `UPDATE withdrawal_requests
        SET unsigned_xdr = $1, creator_signed = TRUE
        WHERE id = $2 AND status = 'pending' AND creator_signed = FALSE
        RETURNING *`,
-      [signedXdr, req.params.id]
-    );
-    if (!updated.length) {
-      await client.query('ROLLBACK');
+        [signedXdr, req.params.id]
+      );
+      if (!updated.length) {
+        return null;
+      }
+      await logWithdrawalEvent(client, {
+        withdrawalRequestId: req.params.id,
+        actorUserId: req.user.userId,
+        action: 'creator_signed',
+        note: null,
+        metadata: {},
+      });
+      return updated[0];
+    }, db);
+    if (!updatedWithdrawal) {
       return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
     }
-    await logWithdrawalEvent(client, {
-      withdrawalRequestId: req.params.id,
-      actorUserId: req.user.userId,
-      action: 'creator_signed',
-      note: null,
-      metadata: {},
-    });
-    await client.query('COMMIT');
-    res.json(updated[0]);
+    res.json(updatedWithdrawal);
   } catch (err) {
-    await client.query('ROLLBACK');
     logger.error('Creator approval recording failed', {
       withdrawal_id: req.params.id,
       error: err.message,
     });
     res.status(500).json({ error: 'Could not record creator approval' });
-  } finally {
-    client.release();
   }
 });
 
@@ -844,39 +841,38 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     });
   }
 
-  const client = await db.connect();
   try {
-    await client.query('BEGIN');
-    const { rows: updated } = await client.query(
-      `UPDATE withdrawal_requests
+    const updatedWithdrawal = await withTransaction(async client => {
+      const { rows: updated } = await client.query(
+        `UPDATE withdrawal_requests
        SET status = 'denied', denial_reason = $1
        WHERE id = $2 AND status = 'pending' AND creator_signed = FALSE
        RETURNING *`,
-      [reason, req.params.id]
-    );
-    if (!updated.length) {
-      await client.query('ROLLBACK');
+        [reason, req.params.id]
+      );
+      if (!updated.length) {
+        return null;
+      }
+      await logWithdrawalEvent(client, {
+        withdrawalRequestId: req.params.id,
+        actorUserId: req.user.userId,
+        action: 'creator_cancelled',
+        note: reason,
+        metadata: {},
+      });
+      return updated[0];
+    }, db);
+    if (!updatedWithdrawal) {
       return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
     }
-    await logWithdrawalEvent(client, {
-      withdrawalRequestId: req.params.id,
-      actorUserId: req.user.userId,
-      action: 'creator_cancelled',
-      note: reason,
-      metadata: {},
-    });
-    await client.query('COMMIT');
-    setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updated[0]));
-    res.json(updated[0]);
+    setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updatedWithdrawal));
+    res.json(updatedWithdrawal);
   } catch (err) {
-    await client.query('ROLLBACK');
     logger.error('Withdrawal cancellation failed', {
       withdrawal_id: req.params.id,
       error: err.message,
     });
     res.status(500).json({ error: 'Could not cancel withdrawal request' });
-  } finally {
-    client.release();
   }
 });
 
@@ -930,28 +926,30 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
     return res.status(409).json({ error: 'Platform has already signed; cannot reject' });
   }
 
-  const client = await db.connect();
   try {
-    await client.query('BEGIN');
-    const { rows: updated } = await client.query(
-      `UPDATE withdrawal_requests
+    const updatedWithdrawal = await withTransaction(async client => {
+      const { rows: updated } = await client.query(
+        `UPDATE withdrawal_requests
        SET status = 'denied', denial_reason = $1
        WHERE id = $2 AND status = 'pending' AND creator_signed = TRUE AND platform_signed = FALSE
        RETURNING *`,
-      [reason, req.params.id]
-    );
-    if (!updated.length) {
-      await client.query('ROLLBACK');
+        [reason, req.params.id]
+      );
+      if (!updated.length) {
+        return null;
+      }
+      await logWithdrawalEvent(client, {
+        withdrawalRequestId: req.params.id,
+        actorUserId: req.user.userId,
+        action: 'platform_rejected',
+        note: reason,
+        metadata: {},
+      });
+      return updated[0];
+    }, db);
+    if (!updatedWithdrawal) {
       return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
     }
-    await logWithdrawalEvent(client, {
-      withdrawalRequestId: req.params.id,
-      actorUserId: req.user.userId,
-      action: 'platform_rejected',
-      note: reason,
-      metadata: {},
-    });
-    await client.query('COMMIT');
 
     const { rows: cRows } = await db.query(
       `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
@@ -979,19 +977,16 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
           error: err.message,
         })
       );
-      emitWithdrawalUpdated(cRows[0].creator_id, updated[0]);
+      emitWithdrawalUpdated(cRows[0].creator_id, updatedWithdrawal);
     }
 
-    res.json(updated[0]);
+    res.json(updatedWithdrawal);
   } catch (err) {
-    await client.query('ROLLBACK');
     logger.error('Withdrawal rejection failed', {
       withdrawal_id: req.params.id,
       error: err.message,
     });
     res.status(500).json({ error: 'Could not reject withdrawal request' });
-  } finally {
-    client.release();
   }
 });
 

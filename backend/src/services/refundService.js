@@ -36,6 +36,7 @@ async function getCampaignRefunds(campaignId, { status = null, limit = 50, offse
 const db = require('../config/database');
 const logger = require('../config/logger');
 const stellarService = require('./stellarService');
+const withTransaction = require('../utils/withTransaction');
 
 async function getEligibleContributions(campaignId, options = {}) {
   const limit = Math.max(1, Math.min(500, parseInt(options.limit, 10) || 50));
@@ -81,10 +82,8 @@ async function processRefund(contributionId, amount, service = stellarService) {
     throw error;
   }
 
-  const client = await (typeof db.connect === 'function' ? db.connect() : db.pool.connect());
-  try {
-    await client.query('BEGIN');
-
+  const pool = typeof db.connect === 'function' ? db : db.pool;
+  return withTransaction(async client => {
     const { rows: contribRows } = await client.query(
       `SELECT id, campaign_id, sender_public_key, amount, refunded_amount,
               c.wallet_public_key, c.creator_id
@@ -126,7 +125,6 @@ async function processRefund(contributionId, amount, service = stellarService) {
     }
 
     if (!txHash) {
-      await client.query('ROLLBACK');
       const error = new Error('On-chain refund transaction failed or missing transaction hash');
       error.status = 502;
       throw error;
@@ -154,14 +152,8 @@ async function processRefund(contributionId, amount, service = stellarService) {
       [numericAmount, contrib.campaign_id]
     );
 
-    await client.query('COMMIT');
     return refundRows[0];
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  }, pool);
 }
 
 module.exports = {
