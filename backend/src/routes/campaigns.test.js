@@ -760,6 +760,110 @@ function buildListingApp(queries) {
   });
 }
 
+// #899: the listing and detail endpoints are unauthenticated, so their payloads
+// must never carry the fraud detector's output, the duplicate fingerprint or
+// the column reserved for the encrypted campaign wallet key.
+const INTERNAL_CAMPAIGN_KEYS = [
+  'content_fingerprint',
+  'is_flagged_duplicate',
+  'is_flagged_fraud',
+  'fraud_score',
+  'fraud_signals',
+  'wallet_secret_encrypted',
+  'search_vector',
+  'refund_xdr',
+];
+
+function internalCampaignFields() {
+  return {
+    content_fingerprint: 'fingerprint-internal',
+    is_flagged_duplicate: true,
+    is_flagged_fraud: true,
+    fraud_score: 88,
+    fraud_signals: { velocity: 'high' },
+    wallet_secret_encrypted: 'encrypted-wallet-secret',
+    search_vector: 'solar:1',
+    refund_xdr: 'AAAA-internal',
+  };
+}
+
+test('GET /api/campaigns never serialises fraud/duplicate internals or the wallet key', async () => {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
+      return {
+        rows: [
+          { id: 'camp-1', title: 'Solar panels', status: 'active', ...internalCampaignFields() },
+        ],
+      };
+    },
+  });
+
+  const response = await request(app).get('/api/campaigns');
+  assert.equal(response.status, 200);
+
+  const campaign = response.body.campaigns[0];
+  assert.equal(campaign.title, 'Solar panels');
+  for (const key of INTERNAL_CAMPAIGN_KEYS) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(campaign, key),
+      false,
+      `${key} must not be serialised by GET /api/campaigns`
+    );
+  }
+
+  const listQuery = queries.find(query => query.text.includes('FROM campaigns c'));
+  assert.ok(listQuery, 'the listing query should have been issued');
+  assert.doesNotMatch(listQuery.text, /SELECT\s+c\.\*/);
+  assert.match(listQuery.text, /SELECT\s+c\.id,/);
+});
+
+test('GET /api/campaigns/:id never serialises fraud/duplicate internals or the wallet key', async () => {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('SELECT is_admin FROM users')) return { rows: [{ is_admin: false }] };
+      if (text.includes('FROM campaigns c')) {
+        return {
+          rows: [
+            {
+              id: 'camp-1',
+              creator_id: 'creator-1',
+              title: 'Solar panels',
+              status: 'active',
+              is_hidden: false,
+              deleted_at: null,
+              contributor_count: 3,
+              ...internalCampaignFields(),
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app).get('/api/campaigns/camp-1');
+  assert.equal(response.status, 200);
+
+  assert.equal(response.body.title, 'Solar panels');
+  assert.equal(response.body.contributor_count, 3);
+  for (const key of INTERNAL_CAMPAIGN_KEYS) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(response.body, key),
+      false,
+      `${key} must not be serialised by GET /api/campaigns/:id`
+    );
+  }
+
+  const detailQuery = queries.find(query => query.text.includes('FROM campaigns c'));
+  assert.ok(detailQuery, 'the detail query should have been issued');
+  assert.doesNotMatch(detailQuery.text, /SELECT\s+c\.\*/);
+});
+
 test('GET /api/campaigns search without sort ranks by relevance', async () => {
   const queries = [];
   const app = buildListingApp(queries);

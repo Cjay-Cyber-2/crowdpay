@@ -49,6 +49,8 @@ function buildApp({
   connectImpl,
   sorobanImpl,
   ledgerMonitorImpl,
+  pathPaymentPreviewImpl,
+  contributionServiceImpl,
 }) {
   const stellarStub = {
     buildUnsignedContributionPayment: async () => 'unsigned-xdr',
@@ -211,6 +213,9 @@ function buildApp({
         platform_fee_amount: prepared.feeAmount ?? 0,
       };
     },
+    // Tests that need to observe exactly what the route hands to submission
+    // (e.g. the redeemed cross-asset preview route, #900) can override it.
+    ...contributionServiceImpl,
   };
 
   const databaseStub = {
@@ -235,6 +240,9 @@ function buildApp({
       withDecryptedWalletSecret: async (_ciphertext, _context, fn) => fn('SDECRYPTED'),
     },
     '../services/contributionService': contributionServiceStub,
+    '../services/pathPaymentPreview': {
+      consumeContributionPreview: pathPaymentPreviewImpl || (async () => null),
+    },
     '../services/sorobanService': sorobanStub,
     '../services/ledgerMonitor': ledgerMonitorStub,
     '../services/kycService': {
@@ -1603,6 +1611,155 @@ test('POST /api/contributions includes platform_fee_amount in response and metad
   assert.equal(response.status, 202);
   assert.equal(response.body.platform_fee_amount, 0.15);
   assert.equal(capturedMetadata.platform_fee_amount, 0.15);
+});
+
+// #900: the preview token is single-use, so redeeming it both before opening
+// the transaction and again inside it always threw PREVIEW_EXPIRED and every
+// cross-asset contribution failed. It must be redeemed exactly once, inside the
+// transaction, and the approved route (with its max_send_amount) must reach
+// submission.
+test('POST /api/contributions redeems a cross-asset preview token once and enforces the approved route', async () => {
+  const CAMPAIGN_ID = '11111111-1111-1111-1111-111111111111';
+  const txOrder = [];
+  const previewStore = new Map([
+    [
+      'tok-cross-asset',
+      {
+        campaign_id: CAMPAIGN_ID,
+        send_asset: 'XLM',
+        dest_amount: '5.0000000',
+        ranked_paths: [
+          {
+            index: 0,
+            source_asset: 'XLM',
+            destination_asset: 'USDC',
+            destination_amount: '5.0000000',
+            source_amount: '7.0000000',
+            max_send_amount: '7.3500000',
+            path: ['AQUA'],
+          },
+        ],
+      },
+    ],
+  ]);
+  const consumeCalls = [];
+  const submissions = [];
+
+  const app = buildApp({
+    queryImpl: async text => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
+        txOrder.push(text);
+        return { rows: [] };
+      }
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [
+            { id: CAMPAIGN_ID, status: 'active', asset_type: 'USDC', wallet_public_key: VALID_G },
+          ],
+        };
+      }
+      if (text.includes('FROM users')) {
+        return { rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }] };
+      }
+      return { rows: [] };
+    },
+    pathPaymentPreviewImpl: async params => {
+      consumeCalls.push(params);
+      txOrder.push('CONSUME_PREVIEW');
+      const stored = previewStore.get(params.previewToken);
+      if (!stored) {
+        const error = new Error('Contribution preview has expired — please refresh the quote');
+        error.code = 'PREVIEW_EXPIRED';
+        error.statusCode = 409;
+        throw error;
+      }
+      // Single-use: the token is destroyed on the first redemption.
+      previewStore.delete(params.previewToken);
+      return stored.ranked_paths.find(path => path.index === params.selectedPathIndex);
+    },
+    contributionServiceImpl: {
+      submitCustodialContribution: async params => {
+        submissions.push(params);
+        return { txHash: 'tx-cross-asset', conversionQuote: params.previewPath, flowMetadata: {} };
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: CAMPAIGN_ID,
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      preview_token: 'tok-cross-asset',
+      selected_path_index: 0,
+    });
+
+  assert.equal(response.status, 202);
+  assert.equal(response.body.preview_validated, true);
+  assert.equal(consumeCalls.length, 1, 'the single-use preview token must be redeemed exactly once');
+  assert.equal(consumeCalls[0].previewToken, 'tok-cross-asset');
+  assert.equal(consumeCalls[0].selectedPathIndex, 0);
+  assert.equal(previewStore.has('tok-cross-asset'), false, 'the preview key must be gone afterwards');
+
+  assert.ok(txOrder.indexOf('BEGIN') !== -1, 'the redemption must happen inside a transaction');
+  assert.ok(
+    txOrder.indexOf('BEGIN') < txOrder.indexOf('CONSUME_PREVIEW'),
+    'BEGIN must precede the single redemption'
+  );
+
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].previewPath.max_send_amount, '7.3500000');
+  assert.deepEqual(submissions[0].previewPath.path, ['AQUA']);
+  assert.equal(response.body.conversion_quote.max_send_amount, '7.3500000');
+});
+
+test('POST /api/contributions rejects an expired cross-asset preview token without recording a contribution', async () => {
+  const CAMPAIGN_ID = '11111111-1111-1111-1111-111111111111';
+  const submissions = [];
+
+  const app = buildApp({
+    queryImpl: async text => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [
+            { id: CAMPAIGN_ID, status: 'active', asset_type: 'USDC', wallet_public_key: VALID_G },
+          ],
+        };
+      }
+      if (text.includes('FROM users')) {
+        return { rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }] };
+      }
+      return { rows: [] };
+    },
+    pathPaymentPreviewImpl: async () => {
+      const error = new Error('Contribution preview has expired — please refresh the quote');
+      error.code = 'PREVIEW_EXPIRED';
+      error.statusCode = 409;
+      throw error;
+    },
+    contributionServiceImpl: {
+      submitCustodialContribution: async params => {
+        submissions.push(params);
+        return { txHash: 'should-not-happen' };
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: CAMPAIGN_ID,
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      preview_token: 'expired-token',
+      selected_path_index: 0,
+    });
+
+  assert.equal(response.status, 409);
+  assert.equal(submissions.length, 0, 'no contribution may be recorded for a stale preview');
 });
 
 test(

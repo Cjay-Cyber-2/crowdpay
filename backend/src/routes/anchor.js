@@ -9,6 +9,7 @@ const {
   ensureCustodialAccountFundedAndTrusted,
   getSupportedAssetCodes,
 } = require('../services/stellarService');
+const { PUBLIC_CAMPAIGN_SELECT } = require('../lib/publicCampaignColumns');
 const {
   buildContributionIntent,
   submitCustodialContribution,
@@ -231,7 +232,7 @@ async function loadUserWallet(userId) {
 
 async function loadCampaignForContribution(campaignId) {
   const { rows } = await db.query(
-    'SELECT c.*, u.email AS creator_email FROM campaigns c JOIN users u ON u.id = c.creator_id WHERE c.id = $1 AND c.status = $2',
+    `SELECT ${PUBLIC_CAMPAIGN_SELECT}, u.email AS creator_email FROM campaigns c JOIN users u ON u.id = c.creator_id WHERE c.id = $1 AND c.status = $2`,
     [campaignId, 'active']
   );
   return rows[0] || null;

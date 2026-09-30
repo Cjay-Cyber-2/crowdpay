@@ -32,6 +32,17 @@ function buildReconciliation(overrides = {}) {
     release: () => {},
   };
 
+  const campaignRow = {
+    id: 'camp-1',
+    wallet_public_key: 'GWALLET',
+    asset_type: 'USDC',
+    raised_amount: '100',
+    target_amount: '1000',
+    status: 'active',
+    escrow_contract_id: null,
+    ...(overrides.campaign || {}),
+  };
+
   const mockDb = {
     query: async (text, params) => {
       queryLog.push({ text, params, via: 'pool' });
@@ -39,32 +50,10 @@ function buildReconciliation(overrides = {}) {
         return { rows: overrides.pendingWithdrawal ? [{ id: 'w-1' }] : [] };
       }
       if (text.includes('FROM campaigns WHERE id = $1')) {
-        return {
-          rows: [
-            {
-              id: 'camp-1',
-              wallet_public_key: 'GWALLET',
-              asset_type: 'USDC',
-              raised_amount: '100',
-              target_amount: '1000',
-              status: 'active',
-            },
-          ],
-        };
+        return { rows: [campaignRow] };
       }
       if (text.includes('FROM campaigns') && text.includes("status IN ('active', 'funded')")) {
-        return {
-          rows: [
-            {
-              id: 'camp-1',
-              wallet_public_key: 'GWALLET',
-              asset_type: 'USDC',
-              raised_amount: '100',
-              target_amount: '1000',
-              status: 'active',
-            },
-          ],
-        };
+        return { rows: overrides.noCampaigns ? [] : [campaignRow] };
       }
       return { rows: [] };
     },
@@ -97,7 +86,13 @@ function buildReconciliation(overrides = {}) {
       invalidatePrefix: () => {},
     },
     './stellarService': {
-      getCampaignBalance: async () => overrides.onChainBalance || { USDC: '150' },
+      getCampaignBalance:
+        overrides.getCampaignBalanceImpl || (async () => overrides.onChainBalance || { USDC: '150' }),
+    },
+    './sorobanService': {
+      getEscrowTotalRaised:
+        overrides.getEscrowTotalRaised ||
+        (async () => (overrides.onChainContractStroops === undefined ? 0n : overrides.onChainContractStroops)),
     },
     './stellarTransactionService': {
       insertContributionAdjustment: async (client, row) => {
@@ -290,3 +285,90 @@ test('no contribution adjustment is inserted when campaign has a pending withdra
     'no adjustment should be inserted for skipped campaigns'
   );
 });
+
+// ── #901: contract-mode campaigns and rotated wallets ────────────────────────
+
+const CONTRACT_ID = `C${'A'.repeat(55)}`;
+
+test('contract-mode campaigns are reconciled from escrow get_total_raised, not the empty account', async () => {
+  let queriedContractId = null;
+  const reconciliation = buildReconciliation({
+    // The classic multisig account is empty for contract-mode campaigns.
+    onChainBalance: { USDC: '0' },
+    campaign: { escrow_contract_id: CONTRACT_ID },
+    getEscrowTotalRaised: async contractId => {
+      queriedContractId = contractId;
+      return 1500000000n; // 150.0000000 in stroops
+    },
+  });
+
+  const result = await reconciliation.reconcileSingleCampaign('camp-1');
+
+  assert.strictEqual(queriedContractId, CONTRACT_ID, 'the escrow contract must be queried');
+  assert.strictEqual(result.liveBalance, 150, 'the contract total is authoritative');
+  assert.strictEqual(result.dbBalance, 100);
+  assert.strictEqual(result.diff, 50);
+});
+
+test('contract-mode campaigns are never zeroed from the classic account balance', async () => {
+  const reconciliation = buildReconciliation({
+    onChainBalance: { USDC: '0' },
+    campaign: { escrow_contract_id: CONTRACT_ID },
+    getEscrowTotalRaised: async () => 1000000000n, // exactly matches raised_amount
+  });
+
+  const result = await reconciliation.reconcileSingleCampaign('camp-1');
+
+  assert.strictEqual(result.updated, false);
+  assert.strictEqual(result.liveBalance, 100);
+  assert.ok(
+    !queryLog.some(q => q.text.includes('UPDATE campaigns') && q.text.includes('raised_amount')),
+    'a contract campaign must not be rewritten from the empty classic account'
+  );
+});
+
+test('the batch scan only covers live classic-wallet campaigns', async () => {
+  const reconciliation = buildReconciliation();
+  await reconciliation.reconcileCampaignBalances();
+
+  const scan = queryLog.find(
+    q => q.via === 'pool' && q.text.includes("status IN ('active', 'funded')")
+  );
+  assert.ok(scan, 'the reconciliation scan should have been issued');
+  assert.match(scan.text, /deleted_at IS NULL/);
+  assert.match(scan.text, /escrow_contract_id IS NULL/);
+  assert.match(scan.text, /escrow_contract_id/);
+});
+
+test('an unreachable wallet is skipped as wallet_unavailable instead of erroring', async () => {
+  const reconciliation = buildReconciliation({
+    getCampaignBalanceImpl: async () => {
+      throw new Error('account not found');
+    },
+  });
+
+  const result = await reconciliation.reconcileSingleCampaign('camp-1');
+
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'wallet_unavailable');
+  assert.ok(
+    !queryLog.some(q => q.text.includes('UPDATE campaigns') && q.text.includes('raised_amount')),
+    'an unreachable wallet must not rewrite raised_amount'
+  );
+});
+
+test('the batch summary counts an unreachable wallet as skipped, not an error', async () => {
+  const reconciliation = buildReconciliation({
+    getCampaignBalanceImpl: async () => {
+      throw new Error('account not found');
+    },
+  });
+
+  const summary = await reconciliation.reconcileCampaignBalances();
+
+  assert.strictEqual(summary.errors, 0);
+  assert.strictEqual(summary.skipped, 1);
+  assert.strictEqual(summary.updated, 0);
+  assert.strictEqual(summary.results[0].reason, 'wallet_unavailable');
+});
+

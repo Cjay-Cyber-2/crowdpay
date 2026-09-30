@@ -93,8 +93,11 @@ async function runUp() {
       }
     }
     console.log(`[migrate] Done. Applied ${count} migration(s).`);
-  } catch (_err) {
+  } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    // Never swallow the failure silently: an unexplained non-zero exit hides
+    // validation errors (e.g. an unsupported migration file) from operators.
+    console.error('[migrate] Failed:', err.message);
     process.exitCode = 1;
   } finally {
     client.release();
