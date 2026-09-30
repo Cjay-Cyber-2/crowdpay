@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const withTransaction = require('../utils/withTransaction');
 const { submitCustodialContribution } = require('./contributionService');
 
 function poolError(message, statusCode) {
@@ -102,10 +103,7 @@ async function create({ campaign_id, leader_id, title, description, target_amoun
  * to a share; the existing `leave` endpoint is the opt-out path.
  */
 async function join({ pool_id, user_id, share_amount, display_name }) {
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
+  return withTransaction(async client => {
     const { rows: poolRows } = await client.query(
       `SELECT * FROM contribution_pools WHERE id = $1 AND status = 'open' FOR UPDATE`,
       [pool_id]
@@ -135,14 +133,8 @@ async function join({ pool_id, user_id, share_amount, display_name }) {
       throw poolError('Already a member of this pool', 409);
     }
 
-    await client.query('COMMIT');
     return rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  }, db);
 }
 
 /**
@@ -216,14 +208,11 @@ async function update(poolId, userId, fields) {
  * Freighter leader gets a clear 422 rather than a half-built signing flow.
  */
 async function submitPool(poolId, userId) {
-  const client = await db.connect();
   let priorStatus;
   let members;
   let totalAmount;
   let campaignId;
-  try {
-    await client.query('BEGIN');
-
+  await withTransaction(async client => {
     const { rows: poolRows } = await client.query(
       `SELECT * FROM contribution_pools WHERE id = $1 FOR UPDATE`,
       [poolId]
@@ -248,18 +237,11 @@ async function submitPool(poolId, userId) {
       `UPDATE contribution_pools SET status = 'submitting', updated_at = NOW() WHERE id = $1`,
       [poolId]
     );
-    await client.query('COMMIT');
-
     priorStatus = pool.status;
     members = memberRows;
     totalAmount = total;
     campaignId = pool.campaign_id;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  }, db);
 
   try {
     const { rows: leaderRows } = await db.query(

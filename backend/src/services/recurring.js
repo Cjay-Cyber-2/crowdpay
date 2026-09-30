@@ -11,6 +11,7 @@
 
 const db = require('../config/database');
 const logger = require('../config/logger');
+const withTransaction = require('../utils/withTransaction');
 const {
   createSubscriptionClaimableBalances,
   claimSubscriptionBalanceToCampaign,
@@ -286,30 +287,34 @@ async function submitSubscription({
     })),
   });
 
-  const client = await db.connect();
   let subscriptionId;
   try {
-    await client.query('BEGIN');
-    const { rows: inserted } = await client.query(
-      `INSERT INTO subscriptions
+    subscriptionId = await withTransaction(async client => {
+      const { rows: inserted } = await client.query(
+        `INSERT INTO subscriptions
         (campaign_id, contributor_user_id, amount_per_period, asset, period_months, total_periods)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id`,
-      [campaignId, userId, input.amount, asset, input.periodMonths, input.totalPeriods]
-    );
-    subscriptionId = inserted[0].id;
+        [campaignId, userId, input.amount, asset, input.periodMonths, input.totalPeriods]
+      );
+      const createdSubscriptionId = inserted[0].id;
 
-    for (let i = 0; i < schedule.length; i += 1) {
-      await client.query(
-        `INSERT INTO subscription_balances
+      for (let i = 0; i < schedule.length; i += 1) {
+        await client.query(
+          `INSERT INTO subscription_balances
           (subscription_id, stellar_balance_id, scheduled_date, amount)
         VALUES ($1, $2, $3, $4)`,
-        [subscriptionId, balanceIds[i], schedule[i].scheduledDate.toISOString(), schedule[i].amount]
-      );
-    }
-    await client.query('COMMIT');
+          [
+            createdSubscriptionId,
+            balanceIds[i],
+            schedule[i].scheduledDate.toISOString(),
+            schedule[i].amount,
+          ]
+        );
+      }
+      return createdSubscriptionId;
+    }, db);
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
     logger.error('subscriptions: failed to persist Freighter schedule after signing', {
       campaign_id: campaignId,
       user_id: userId,
@@ -317,8 +322,6 @@ async function submitSubscription({
       error: err.message,
     });
     throw err;
-  } finally {
-    client.release();
   }
 
   logger.info('subscriptions: created via Freighter', {
@@ -469,30 +472,34 @@ async function createSubscription({
     }
   );
 
-  const client = await db.connect();
   let subscriptionId;
   try {
-    await client.query('BEGIN');
-    const { rows: inserted } = await client.query(
-      `INSERT INTO subscriptions
+    subscriptionId = await withTransaction(async client => {
+      const { rows: inserted } = await client.query(
+        `INSERT INTO subscriptions
          (campaign_id, contributor_user_id, amount_per_period, asset, period_months, total_periods)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
-      [campaignId, userId, input.amount, asset, input.periodMonths, input.totalPeriods]
-    );
-    subscriptionId = inserted[0].id;
+        [campaignId, userId, input.amount, asset, input.periodMonths, input.totalPeriods]
+      );
+      const createdSubscriptionId = inserted[0].id;
 
-    for (let i = 0; i < schedule.length; i += 1) {
-      await client.query(
-        `INSERT INTO subscription_balances
+      for (let i = 0; i < schedule.length; i += 1) {
+        await client.query(
+          `INSERT INTO subscription_balances
            (subscription_id, stellar_balance_id, scheduled_date, amount)
          VALUES ($1, $2, $3, $4)`,
-        [subscriptionId, balanceIds[i], schedule[i].scheduledDate.toISOString(), schedule[i].amount]
-      );
-    }
-    await client.query('COMMIT');
+          [
+            createdSubscriptionId,
+            balanceIds[i],
+            schedule[i].scheduledDate.toISOString(),
+            schedule[i].amount,
+          ]
+        );
+      }
+      return createdSubscriptionId;
+    }, db);
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
     logger.error('subscriptions: failed to persist schedule after locking funds', {
       campaign_id: campaignId,
       user_id: userId,
@@ -500,8 +507,6 @@ async function createSubscription({
       error: err.message,
     });
     throw err;
-  } finally {
-    client.release();
   }
 
   logger.info('subscriptions: created', {
@@ -541,10 +546,7 @@ async function cancelSubscription({ campaignId, subscriptionId, userId }) {
 
   const noticeCutoff = new Date(Date.now() + CANCELLATION_NOTICE_DAYS * DAY_MS);
 
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
+  const { cancelled, nonCancellable } = await withTransaction(async client => {
     const { rows: cancelled } = await client.query(
       `UPDATE subscription_balances
        SET status = 'cancellation_requested'
@@ -567,42 +569,36 @@ async function cancelSubscription({ campaignId, subscriptionId, userId }) {
     await client.query(`UPDATE subscriptions SET status = 'cancelled' WHERE id = $1`, [
       subscriptionId,
     ]);
+    return { cancelled, nonCancellable };
+  }, db);
 
-    await client.query('COMMIT');
+  // The earliest date the contributor's reclaim predicate opens on a cancelled balance.
+  const earliestCancelled = cancelled
+    .map(row => new Date(row.scheduled_date).getTime())
+    .sort((a, b) => a - b)[0];
+  const estimatedRefundDate = earliestCancelled
+    ? new Date(earliestCancelled + CONTRIBUTOR_RECLAIM_AFTER_DAYS * DAY_MS).toISOString()
+    : null;
 
-    // The earliest date the contributor's reclaim predicate opens on a cancelled balance.
-    const earliestCancelled = cancelled
-      .map(row => new Date(row.scheduled_date).getTime())
-      .sort((a, b) => a - b)[0];
-    const estimatedRefundDate = earliestCancelled
-      ? new Date(earliestCancelled + CONTRIBUTOR_RECLAIM_AFTER_DAYS * DAY_MS).toISOString()
-      : null;
+  logger.info('subscriptions: cancelled', {
+    subscription_id: subscriptionId,
+    cancelled: cancelled.length,
+    non_cancellable: nonCancellable.length,
+  });
 
-    logger.info('subscriptions: cancelled', {
-      subscription_id: subscriptionId,
-      cancelled: cancelled.length,
-      non_cancellable: nonCancellable.length,
-    });
-
-    return {
-      cancelled: cancelled.length,
-      nonCancellable: nonCancellable.length,
-      non_cancellable_balances: nonCancellable.map(row => ({
-        id: row.id,
-        stellar_balance_id: row.stellar_balance_id,
-        scheduled_date: row.scheduled_date,
-        amount: row.amount,
-        status: row.status,
-        reason: row.status === 'claimed' ? 'already_claimed' : 'within_notice_period',
-      })),
-      estimatedRefundDate,
-    };
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  return {
+    cancelled: cancelled.length,
+    nonCancellable: nonCancellable.length,
+    non_cancellable_balances: nonCancellable.map(row => ({
+      id: row.id,
+      stellar_balance_id: row.stellar_balance_id,
+      scheduled_date: row.scheduled_date,
+      amount: row.amount,
+      status: row.status,
+      reason: row.status === 'claimed' ? 'already_claimed' : 'within_notice_period',
+    })),
+    estimatedRefundDate,
+  };
 }
 
 /** Active and past subscriptions for the contributor dashboard. */
@@ -660,9 +656,7 @@ async function settleSubscriptionStatus(client, subscriptionId) {
 }
 
 async function markBalanceReclaimed(subscriptionId, balanceRowId) {
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
+  await withTransaction(async client => {
     await client.query(
       `UPDATE subscription_balances SET status = 'contributor_reclaimed' WHERE id = $1`,
       [balanceRowId]
@@ -670,13 +664,7 @@ async function markBalanceReclaimed(subscriptionId, balanceRowId) {
     await client.query(`UPDATE subscriptions SET status = 'cancelled' WHERE id = $1`, [
       subscriptionId,
     ]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  }, db);
 }
 
 async function recordClaimedBalance({ balance, txHash }) {
@@ -802,9 +790,7 @@ async function closeIneligibleInstallments({ balanceId = null } = {}) {
   const subscriptionIds = [...new Set(rows.map(r => r.subscription_id))];
   for (const subscriptionId of subscriptionIds) {
     const reason = rows.find(r => r.subscription_id === subscriptionId).closure_reason;
-    const client = await db.connect();
-    try {
-      await client.query('BEGIN');
+    await withTransaction(async client => {
       const status = await settleSubscriptionStatus(client, subscriptionId);
       if (status === 'closed') {
         await client.query(
@@ -813,13 +799,7 @@ async function closeIneligibleInstallments({ balanceId = null } = {}) {
           [subscriptionId, reason]
         );
       }
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
+    }, db);
   }
 
   logger.info('subscription-claim-worker: closed installments', {
@@ -839,10 +819,8 @@ async function closeIneligibleInstallments({ balanceId = null } = {}) {
 async function processDueSubscriptionBalances() {
   const closedRows = await closeIneligibleInstallments();
 
-  const client = await db.connect();
   let due = [];
-  try {
-    await client.query('BEGIN');
+  await withTransaction(async client => {
     const res = await client.query(
       `SELECT sb.id, sb.subscription_id, sb.stellar_balance_id, sb.amount, sb.scheduled_date,
             s.asset, s.campaign_id, c.wallet_public_key AS campaign_public_key,
@@ -866,14 +844,7 @@ async function processDueSubscriptionBalances() {
         [dueIds]
       );
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    client.release();
-    throw err;
-  } finally {
-    client.release();
-  }
+  }, db);
 
   let claimed = 0;
   let reclaimed = 0;

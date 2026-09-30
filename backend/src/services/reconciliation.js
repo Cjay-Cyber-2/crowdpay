@@ -2,6 +2,7 @@ const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const cache = require('../utils/cache');
+const withTransaction = require('../utils/withTransaction');
 const { getCampaignBalance } = require('./stellarService');
 const {
   insertContributionAdjustment,
@@ -45,9 +46,7 @@ async function applyReconciliationCorrection(campaign, dbBalance, liveBalance) {
 
   logger.warn('[reconcile] raised_amount corrected to match on-chain balance', audit);
 
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
+  const stellarTxId = await withTransaction(async client => {
     await client.query(
       `UPDATE campaigns
        SET raised_amount = $1,
@@ -65,34 +64,28 @@ async function applyReconciliationCorrection(campaign, dbBalance, liveBalance) {
       assetType: campaign.asset_type,
       adjustedAt,
     });
-    const stellarTxId = await insertReconciliationAdjustment(client, {
+    return insertReconciliationAdjustment(client, {
       campaignId: campaign.id,
       dbBalance,
       liveBalance,
       diff,
       assetType: campaign.asset_type,
     });
-    await client.query('COMMIT');
+  }, db);
 
-    cache.invalidate(`campaigns:id:${campaign.id}`);
-    cache.invalidatePrefix('campaigns:list:');
-    cache.invalidatePrefix('stats:');
+  cache.invalidate(`campaigns:id:${campaign.id}`);
+  cache.invalidatePrefix('campaigns:list:');
+  cache.invalidatePrefix('stats:');
 
-    alertDiscrepancyIfNeeded(campaign.id, audit);
+  alertDiscrepancyIfNeeded(campaign.id, audit);
 
-    return {
-      updated: true,
-      dbBalance,
-      liveBalance,
-      diff,
-      stellar_transaction_id: stellarTxId,
-    };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  return {
+    updated: true,
+    dbBalance,
+    liveBalance,
+    diff,
+    stellar_transaction_id: stellarTxId,
+  };
 }
 
 const MAX_STORED_RUNS = 20;

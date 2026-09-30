@@ -23,7 +23,7 @@ export default defineConfig(({ mode }) => ({
     setupFiles: './src/test/setup.js',
   },
   build: {
-    sourcemap: true,
+    sourcemap: process.env.SENTRY_UPLOAD_SOURCEMAPS === 'true',
     rollupOptions: {
       input: {
         main: './index.html',

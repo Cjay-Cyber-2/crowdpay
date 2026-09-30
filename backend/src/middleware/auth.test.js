@@ -39,14 +39,14 @@ function mockRes() {
 
 function createAuthModule({
   dbRows = [],
-  apiKeyRows = [],
   jwtSecret = 'testsecret',
   jwtIssuer = 'https://crowdpay.io',
   jwtAudience = 'crowdpay-api',
 } = {}) {
   return proxyquire('./auth', {
     jsonwebtoken: {
-      verify: (token, secret) => {
+      verify: (token, secret, options) => {
+        assert.deepEqual(options, { algorithms: ['HS256'] });
         if (secret !== jwtSecret) throw new Error('Invalid signature');
         const payload = jwt.decode(token);
         if (!payload) throw new Error('Invalid token');
@@ -54,12 +54,7 @@ function createAuthModule({
       },
     },
     '../config/database': {
-      query: async (text, params) => {
-        if (text?.includes('api_keys')) {
-          return { rows: apiKeyRows };
-        }
-        return { rows: dbRows };
-      },
+      query: async () => ({ rows: dbRows }),
     },
     '@sentry/node': {
       setUser: () => {},
@@ -121,20 +116,8 @@ test('requireAuth allows unbanned users and preserves immediate access restorati
   });
 });
 
-test('cp_live_ API key does not update last_used_at on GET requests', async () => {
-  const { requireAuth } = createAuthModule({
-    dbRows: [{ is_admin: false, is_banned: false }],
-    apiKeyRows: [
-      {
-        id: 'key-1',
-        user_id: 'user-1',
-        scopes: ['read'],
-        expires_at: null,
-        rotation_state: 'active',
-        last_used_at: null,
-      },
-    ],
-  });
+test('requireAuth rejects the obsolete cp_live_ API-key prefix', async () => {
+  const { requireAuth } = createAuthModule();
   const req = {
     headers: { authorization: 'Bearer cp_live_testkey' },
     cookies: {},
@@ -144,76 +127,9 @@ test('cp_live_ API key does not update last_used_at on GET requests', async () =
   const res = mockRes();
 
   await new Promise(resolve => {
-    requireAuth(req, res, () => {
-      resolve();
-    });
+    requireAuth(req, res, resolve);
     setImmediate(resolve);
   });
 
-  assert.equal(res.statusCode, 0);
-});
-
-test('cp_live_ API key updates last_used_at on POST requests', async () => {
-  const { requireAuth } = createAuthModule({
-    dbRows: [{ is_admin: false, is_banned: false }],
-    apiKeyRows: [
-      {
-        id: 'key-1',
-        user_id: 'user-1',
-        scopes: ['read', 'write'],
-        expires_at: null,
-        rotation_state: 'active',
-        last_used_at: null,
-      },
-    ],
-  });
-  const req = {
-    headers: { authorization: 'Bearer cp_live_testkey' },
-    cookies: {},
-    method: 'POST',
-    originalUrl: '/api/campaigns',
-  };
-  const res = mockRes();
-
-  await new Promise(resolve => {
-    requireAuth(req, res, () => {
-      resolve();
-    });
-    setImmediate(resolve);
-  });
-
-  assert.equal(res.statusCode, 0);
-});
-
-test('cp_live_ API key throttles last_used_at updates within interval', async () => {
-  const pastTime = new Date(Date.now() - 60 * 1000); // 1 minute ago
-  const { requireAuth } = createAuthModule({
-    dbRows: [{ is_admin: false, is_banned: false }],
-    apiKeyRows: [
-      {
-        id: 'key-1',
-        user_id: 'user-1',
-        scopes: ['read', 'write'],
-        expires_at: null,
-        rotation_state: 'active',
-        last_used_at: pastTime,
-      },
-    ],
-  });
-  const req = {
-    headers: { authorization: 'Bearer cp_live_testkey' },
-    cookies: {},
-    method: 'POST',
-    originalUrl: '/api/campaigns',
-  };
-  const res = mockRes();
-
-  await new Promise(resolve => {
-    requireAuth(req, res, () => {
-      resolve();
-    });
-    setImmediate(resolve);
-  });
-
-  assert.equal(res.statusCode, 0);
+  assert.equal(res.statusCode, 401);
 });
