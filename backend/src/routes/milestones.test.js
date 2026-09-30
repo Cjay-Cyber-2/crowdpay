@@ -70,6 +70,11 @@ function buildApp({
     },
     '../services/storage': {
       uploadMilestoneEvidence: async () => 'https://cdn.example.com/evidence.pdf',
+      parseMilestoneEvidenceUrl: () => null,
+      milestoneEvidenceExists: async () => false,
+    },
+    '../services/auditService': {
+      logAuditEvent: async () => ({}),
     },
     '../services/notifications': {
       createNotification: async () => {},
@@ -440,4 +445,199 @@ test('POST /api/milestones/:id/submit rejects vbscript: scheme', async () => {
   cleanup();
   assert.equal(res.status, 422);
   assert.match(res.body.error, /evidence_url is not valid/i);
+});
+
+// ─── Automatic release configuration (#930) ──────────────────────────
+
+function autoReleaseQuery({ milestone, onUpdate } = {}) {
+  const calls = [];
+  const queryImpl = async (text, params) => {
+    calls.push({ text, params });
+    if (text.includes('FROM milestones m') && text.includes('JOIN campaigns')) {
+      return { rows: milestone ? [milestone] : [] };
+    }
+    if (text.includes('UPDATE milestones') && text.includes('auto_release_enabled')) {
+      return { rows: [onUpdate ? onUpdate(params) : { ...milestone }] };
+    }
+    if (text.includes('INSERT INTO milestone_events')) return { rows: [] };
+    return { rows: [] };
+  };
+  return { calls, queryImpl };
+}
+
+test('PUT /api/milestones/:id/auto-release enforces the minimum dispute window', async () => {
+  const { calls, queryImpl } = autoReleaseQuery({ milestone: milestoneRow() });
+  const { app, cleanup } = buildApp({ queryImpl });
+  try {
+    const res = await request(app)
+      .put(`/api/milestones/${MILESTONE_ID}/auto-release`)
+      .send({ enabled: true, rule: 'platform_evidence', dispute_window_hours: 12 });
+    assert.equal(res.status, 422);
+    assert.equal(res.body.code, 'DISPUTE_WINDOW_BELOW_MINIMUM');
+    assert.equal(res.body.min_window_seconds, 24 * 3600);
+    assert.ok(!calls.some(c => c.text.includes('UPDATE milestones')), 'nothing is written');
+  } finally {
+    cleanup();
+  }
+});
+
+test('PUT /api/milestones/:id/auto-release refuses to remove the dispute window', async () => {
+  const { queryImpl } = autoReleaseQuery({ milestone: milestoneRow() });
+  const { app, cleanup } = buildApp({ queryImpl });
+  try {
+    const res = await request(app)
+      .put(`/api/milestones/${MILESTONE_ID}/auto-release`)
+      .send({ enabled: true, rule: 'platform_evidence', dispute_window_hours: 0 });
+    assert.equal(res.status, 422);
+    assert.equal(res.body.code, 'DISPUTE_WINDOW_REQUIRED');
+  } finally {
+    cleanup();
+  }
+});
+
+test('PUT /api/milestones/:id/auto-release records the rule and window on the milestone', async () => {
+  const { calls, queryImpl } = autoReleaseQuery({
+    milestone: milestoneRow(),
+    onUpdate: params =>
+      milestoneRow({
+        auto_release_enabled: true,
+        auto_release_rule: params[1],
+        auto_release_rule_config: JSON.parse(params[2]),
+        auto_release_window_seconds: params[3],
+        auto_release_status: 'awaiting_evidence',
+      }),
+  });
+  const { app, cleanup } = buildApp({ queryImpl });
+  try {
+    const sha256 = 'f'.repeat(64);
+    const res = await request(app).put(`/api/milestones/${MILESTONE_ID}/auto-release`).send({
+      enabled: true,
+      rule: 'evidence_hash_commitment',
+      rule_config: { sha256 },
+      dispute_window_hours: 48,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.rule, 'evidence_hash_commitment');
+    assert.deepEqual(res.body.rule_config, { sha256 });
+    assert.equal(res.body.dispute_window_seconds, 48 * 3600);
+    assert.equal(res.body.status, 'awaiting_evidence');
+
+    const event = calls.find(c => c.text.includes('INSERT INTO milestone_events'));
+    assert.equal(event.params[2], 'auto_release_configured');
+    assert.equal(JSON.parse(event.params[4]).rule, 'evidence_hash_commitment');
+  } finally {
+    cleanup();
+  }
+});
+
+test('PUT /api/milestones/:id/auto-release is locked once evidence is submitted', async () => {
+  const { queryImpl } = autoReleaseQuery({ milestone: milestoneRow({ status: 'pending_review' }) });
+  const { app, cleanup } = buildApp({ queryImpl });
+  try {
+    const res = await request(app)
+      .put(`/api/milestones/${MILESTONE_ID}/auto-release`)
+      .send({ enabled: true, rule: 'platform_evidence' });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'AUTO_RELEASE_LOCKED');
+  } finally {
+    cleanup();
+  }
+});
+
+test('PUT /api/milestones/:id/auto-release is creator-only', async () => {
+  const { queryImpl } = autoReleaseQuery({ milestone: milestoneRow() });
+  const { app, cleanup } = buildApp({ queryImpl, userId: 'someone-else' });
+  try {
+    const res = await request(app)
+      .put(`/api/milestones/${MILESTONE_ID}/auto-release`)
+      .send({ enabled: true, rule: 'platform_evidence' });
+    assert.equal(res.status, 403);
+  } finally {
+    cleanup();
+  }
+});
+
+test('GET /api/milestones/:id/auto-release shows backers the pending release and countdown', async () => {
+  const firesAt = new Date(Date.now() + 5 * 3600 * 1000);
+  const { app, cleanup } = buildApp({
+    queryImpl: async text => {
+      if (text.includes('SELECT * FROM milestones WHERE id')) {
+        return {
+          rows: [
+            milestoneRow({
+              status: 'pending_review',
+              evidence_url: 'https://storage.test/evidence/x',
+              evidence_description: 'Release notes and build',
+              auto_release_enabled: true,
+              auto_release_rule: 'platform_evidence',
+              auto_release_rule_config: {},
+              auto_release_window_seconds: 72 * 3600,
+              auto_release_status: 'scheduled',
+              auto_release_at: firesAt,
+              auto_release_evidence_url: 'https://storage.test/evidence/x',
+              auto_release_evidence_sha256: 'a'.repeat(64),
+            }),
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+  try {
+    const res = await request(app).get(`/api/milestones/${MILESTONE_ID}/auto-release`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, 'scheduled');
+    assert.equal(res.body.can_dispute, true);
+    assert.ok(res.body.seconds_remaining > 4 * 3600 && res.body.seconds_remaining <= 5 * 3600);
+    assert.equal(res.body.evidence.url, 'https://storage.test/evidence/x');
+    assert.equal(res.body.evidence.description, 'Release notes and build');
+  } finally {
+    cleanup();
+  }
+});
+
+test('POST /api/milestones with auto_release still enforces the 100% milestone total', async () => {
+  const { app, cleanup } = buildApp({
+    queryImpl: async text => {
+      if (text.includes('FROM campaigns WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: 'campaign-1', creator_id: 'creator-1' }] };
+      }
+      if (text.includes('SUM(release_percentage)'))
+        return { rows: [{ count: 1, total_percentage: '80' }] };
+      if (text.includes('INSERT INTO milestones')) throw new Error('must not insert');
+      return { rows: [] };
+    },
+  });
+  try {
+    const res = await request(app)
+      .post('/api/milestones')
+      .send({
+        campaign_id: 'campaign-1',
+        title: 'Auto milestone',
+        release_percentage: 30,
+        auto_release: { enabled: true, rule: 'platform_evidence' },
+      });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /must not exceed 100%/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('POST /api/milestones rejects an auto_release config below the minimum window', async () => {
+  const { app, cleanup } = buildApp({ queryImpl: async () => ({ rows: [] }) });
+  try {
+    const res = await request(app)
+      .post('/api/milestones')
+      .send({
+        campaign_id: 'campaign-1',
+        title: 'Auto milestone',
+        release_percentage: 30,
+        auto_release: { enabled: true, rule: 'platform_evidence', dispute_window_hours: 1 },
+      });
+    assert.equal(res.status, 422);
+    assert.equal(res.body.code, 'DISPUTE_WINDOW_BELOW_MINIMUM');
+  } finally {
+    cleanup();
+  }
 });

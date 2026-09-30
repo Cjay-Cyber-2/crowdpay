@@ -18,6 +18,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const stellarService = require('../services/stellarService');
 const { ERROR_CODES, allocateProportionalRefunds } = require('../services/dispute');
 const { validateRenderUrl } = require('../utils/urlValidation');
+const { haltScheduledReleases } = require('../services/milestoneAutoRelease');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -33,7 +34,7 @@ async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
 
 // POST /campaigns/:id/disputes — contributor raises a dispute
 router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
-  const { reason, description, evidence_url } = req.body;
+  const { reason, description, evidence_url, milestone_id: milestoneId } = req.body;
 
   const VALID_REASONS = ['non_delivery', 'misrepresentation', 'abandoned', 'other'];
   if (!VALID_REASONS.includes(reason)) {
@@ -75,11 +76,30 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // A dispute may target a specific pending automatic milestone release.
+    if (milestoneId) {
+      const { rows: milestoneRows } = await client.query(
+        'SELECT id FROM milestones WHERE id = $1 AND campaign_id = $2',
+        [milestoneId, campaign.id]
+      );
+      if (!milestoneRows.length) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ error: 'milestone_id does not belong to this campaign' });
+      }
+    }
+
     const { rows } = await client.query(
-      `INSERT INTO disputes (campaign_id, raised_by, reason, description, evidence_url)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO disputes (campaign_id, raised_by, reason, description, evidence_url, milestone_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [campaign.id, req.user.userId, reason, description.trim(), evidence_url || null]
+      [
+        campaign.id,
+        req.user.userId,
+        reason,
+        description.trim(),
+        evidence_url || null,
+        milestoneId || null,
+      ]
     );
     const dispute = rows[0];
 
@@ -97,6 +117,15 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
        WHERE campaign_id = $2 AND status = 'pending'`,
       [dispute.id, campaign.id]
     );
+
+    // Halt every automatic milestone release still waiting on its dispute
+    // window. This commits with the dispute itself, so the worker can never
+    // fire one of these afterwards; a halted release does not resume on its own.
+    const haltedMilestoneIds = await haltScheduledReleases(client, {
+      campaignId: campaign.id,
+      disputeId: dispute.id,
+      milestoneId: milestoneId || null,
+    });
 
     // Block new contributions immediately (see routes/contributions.js CAMPAIGN_DISPUTED check)
     await client.query(`UPDATE campaigns SET status = 'disputed' WHERE id = $1`, [campaign.id]);
@@ -172,7 +201,12 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
       );
     });
 
-    res.status(201).json({ ...dispute, disputeId: dispute.id, frozenAt });
+    res.status(201).json({
+      ...dispute,
+      disputeId: dispute.id,
+      frozenAt,
+      halted_milestone_ids: haltedMilestoneIds,
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {
@@ -271,11 +305,9 @@ router.post(
     } else if (req.user.userId === dispute.creator_id) {
       role = 'creator';
     } else {
-      return res
-        .status(403)
-        .json({
-          error: 'Only the disputing contributor or the campaign creator can submit evidence',
-        });
+      return res.status(403).json({
+        error: 'Only the disputing contributor or the campaign creator can submit evidence',
+      });
     }
 
     const { rows } = await db.query(

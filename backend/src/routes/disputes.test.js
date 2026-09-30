@@ -868,3 +868,106 @@ test('PATCH /disputes/:id rolls back transaction on Soroban release failure', as
     cleanup();
   }
 });
+
+// --- automatic milestone release (#930) ----------------------------------------
+
+function autoReleaseDisputeQuery({ milestoneBelongs = true } = {}) {
+  const calls = [];
+  const query = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT id, creator_id, title, wallet_public_key FROM campaigns')) {
+      return {
+        rows: [
+          {
+            id: CAMPAIGN_ID,
+            creator_id: 'creator-1',
+            title: 'Test Campaign',
+            wallet_public_key: 'GCAMPAIGN',
+          },
+        ],
+      };
+    }
+    if (sql.includes('FROM contributions')) return { rows: [{ id: 'contrib-1' }] };
+    if (sql.includes('SELECT id FROM milestones WHERE id = $1 AND campaign_id = $2')) {
+      return { rows: milestoneBelongs ? [{ id: params[0] }] : [] };
+    }
+    if (sql.includes('INSERT INTO disputes')) {
+      return {
+        rows: [
+          {
+            id: 'dispute-1',
+            campaign_id: params[0],
+            raised_by: params[1],
+            milestone_id: params[5],
+            status: 'open',
+          },
+        ],
+      };
+    }
+    if (sql.includes('UPDATE milestones') && sql.includes("auto_release_status = 'halted'")) {
+      return {
+        rows: [
+          {
+            id: 'milestone-1',
+            auto_release_at: new Date(Date.now() + 3600 * 1000),
+            auto_release_rule: 'platform_evidence',
+            inside_window: true,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  };
+  return { calls, query };
+}
+
+test('POST /campaigns/:id/disputes halts scheduled auto-releases in the same transaction', async () => {
+  const { calls, query } = autoReleaseDisputeQuery();
+  const app = buildApp({ queryImpl: query });
+
+  const res = await request(app).post(`/api/campaigns/${CAMPAIGN_ID}/disputes`).send({
+    reason: 'non_delivery',
+    description: 'The evidence does not show the deliverable',
+    milestone_id: 'milestone-1',
+  });
+
+  assert.equal(res.status, 201);
+  assert.deepEqual(res.body.halted_milestone_ids, ['milestone-1']);
+  assert.equal(res.body.milestone_id, 'milestone-1');
+
+  const sqls = calls.map(c => c.sql);
+  const begin = sqls.indexOf('BEGIN');
+  const halt = sqls.findIndex(s => s.includes("auto_release_status = 'halted'"));
+  const commit = sqls.indexOf('COMMIT');
+  assert.ok(
+    begin >= 0 && begin < halt && halt < commit,
+    'halt commits atomically with the dispute'
+  );
+
+  const haltCall = calls[halt];
+  assert.equal(haltCall.params[0], CAMPAIGN_ID);
+  assert.equal(haltCall.params[1], 'dispute-1');
+  assert.match(
+    haltCall.sql,
+    /auto_release_status = 'scheduled'/,
+    'only pending releases are halted'
+  );
+
+  const event = calls.find(c => c.sql.includes('INSERT INTO milestone_events'));
+  assert.equal(event.params[2], 'auto_release_halted');
+  assert.equal(JSON.parse(event.params[4]).dispute_id, 'dispute-1');
+});
+
+test('POST /campaigns/:id/disputes rejects a milestone_id from another campaign', async () => {
+  const { calls, query } = autoReleaseDisputeQuery({ milestoneBelongs: false });
+  const app = buildApp({ queryImpl: query });
+
+  const res = await request(app).post(`/api/campaigns/${CAMPAIGN_ID}/disputes`).send({
+    reason: 'non_delivery',
+    description: 'Wrong milestone',
+    milestone_id: 'other-milestone',
+  });
+
+  assert.equal(res.status, 422);
+  assert.ok(!calls.some(c => c.sql.includes('INSERT INTO disputes')));
+});
