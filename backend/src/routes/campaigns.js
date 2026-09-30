@@ -765,11 +765,9 @@ router.post(
       }
       if (!['active', 'funded', 'in_progress'].includes(campaign.status)) {
         await client.query('ROLLBACK');
-        return res
-          .status(409)
-          .json({
-            error: `Milestones cannot be edited while campaign status is "${campaign.status}".`,
-          });
+        return res.status(409).json({
+          error: `Milestones cannot be edited while campaign status is "${campaign.status}".`,
+        });
       }
 
       const { rows: existingRows } = await client.query(
@@ -1629,6 +1627,56 @@ function summariseMilestones(milestones) {
   };
 }
 
+const WIDGET_DESCRIPTION_LENGTH = 200;
+const WIDGET_RECENT_BACKER_LIMIT = 3;
+
+function truncateWidgetDescription(description) {
+  if (!description) return '';
+  return description.length > WIDGET_DESCRIPTION_LENGTH
+    ? `${description.slice(0, WIDGET_DESCRIPTION_LENGTH).trim()}...`
+    : description;
+}
+
+/**
+ * Public "recent backers" strip for the embeddable campaign progress widget.
+ *
+ * The widget is rendered on third-party sites, so this applies the same two
+ * privacy gates as the authenticated backers list (#897): the campaign-level
+ * `show_backer_amounts` flag and each contributor's `contributor_privacy`
+ * preference. Anonymous contributors are never named, and `amount_only`
+ * contributors never leak a display name.
+ */
+async function loadWidgetRecentBackers(campaignId, { limit = WIDGET_RECENT_BACKER_LIMIT } = {}) {
+  const { rows: campaignRows } = await db.query(
+    'SELECT show_backer_amounts FROM campaigns WHERE id = $1',
+    [campaignId]
+  );
+  const showAmounts = campaignRows[0]?.show_backer_amounts !== false;
+
+  const { rows } = await db.query(
+    `SELECT ctr.display_name,
+            ctr.amount,
+            COALESCE(u.contributor_privacy, 'full') AS contributor_privacy
+       FROM contributions ctr
+       LEFT JOIN users u ON u.wallet_public_key = ctr.sender_public_key
+      WHERE ctr.campaign_id = $1 AND ctr.status = 'completed'
+      ORDER BY ctr.created_at DESC
+      LIMIT $2`,
+    [campaignId, limit]
+  );
+
+  return rows
+    .map(row => {
+      const privacy = row.contributor_privacy || 'full';
+      const name = privacy === 'full' ? row.display_name || null : null;
+      const amountVisible = showAmounts && privacy !== 'anonymous';
+      const amount = amountVisible ? Number(row.amount) : null;
+      if (!name && amount === null) return null;
+      return { name: name || 'Anonymous', amount };
+    })
+    .filter(Boolean);
+}
+
 function escapeXml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -1683,7 +1731,11 @@ router.get(
   })
 );
 
-// Compact widget payload for lightweight iframe embeds
+// Compact widget payload for lightweight iframe embeds.
+//
+// This is the single contract the embeddable campaign progress widget renders
+// (#954). It deliberately exposes only public summary fields — no creator or
+// contributor identifiers, no wallet addresses, no emails.
 router.get(
   '/:id/widget',
   asyncHandler(async (req, res) => {
@@ -1697,10 +1749,16 @@ router.get(
 
     const milestones = await loadPublicCampaignMilestones(campaignId);
     const impact = await computeCampaignImpact(campaignId);
+    const recentBackers = await loadWidgetRecentBackers(campaignId);
+
+    // Widgets poll every 30s; a matching browser/CDN cache keeps embeds from
+    // turning into a request storm on popular campaign pages.
+    res.header('Cache-Control', 'public, max-age=30');
 
     res.json({
       id: summary.id,
       title: summary.title,
+      description: truncateWidgetDescription(summary.description),
       raised_amount: summary.raised_amount,
       target_amount: summary.target_amount,
       asset_type: summary.asset_type,
@@ -1711,6 +1769,7 @@ router.get(
       contribution_url: summary.contribution_url,
       milestones,
       milestone_summary: summariseMilestones(milestones),
+      recent_backers: recentBackers,
       impact,
     });
   })
@@ -2521,11 +2580,9 @@ router.patch(
         const totalBudget = Number(budgetRows[0].total_budget || 0);
 
         if (totalBudget > 0 && Math.abs(totalBudget - newTarget) > 0.0001) {
-          return res
-            .status(422)
-            .json({
-              error: `Cannot update target amount to ${newTarget}: existing budget breakdown total is ${totalBudget}. Clear the budget breakdown first.`,
-            });
+          return res.status(422).json({
+            error: `Cannot update target amount to ${newTarget}: existing budget breakdown total is ${totalBudget}. Clear the budget breakdown first.`,
+          });
         }
 
         updates.target_amount = newTarget;
@@ -3519,3 +3576,55 @@ router.post(
 );
 
 module.exports = router;
+
+// ─── Reward-tier inventory + fulfillment (issue #958) ───────────────────────
+const {
+  getFulfillmentsByCampaign,
+  getFulfillmentsByUser,
+  updateFulfillmentStatus,
+  getCampaignFulfillmentSummary,
+} = require('../services/rewardTierService');
+
+router.get(
+  '/:id/fulfillments',
+  requireAuth,
+  requireCampaignMember('owner','manager'),
+  asyncHandler(async (req, res) => {
+    const items = await getFulfillmentsByCampaign(req.params.id, { status: req.query.status });
+    const summary = await getCampaignFulfillmentSummary(req.params.id);
+    res.json({ data: items, summary });
+  })
+);
+
+router.patch(
+  '/:id/fulfillments/:fulfillmentId',
+  requireAuth,
+  requireCampaignMember('owner','manager'),
+  asyncHandler(async (req, res) => {
+    const { status, tracking_number, carrier, notes } = req.body || {};
+    if (!status) return res.status(422).json({ error: 'status is required' });
+    try {
+      const updated = await updateFulfillmentStatus(req.params.fulfillmentId, status, {
+        trackingNumber: tracking_number, carrier, notes,
+      });
+      res.json(updated);
+    } catch (err) {
+      res.status(err.statusCode || 400).json({ error: err.message });
+    }
+  })
+);
+
+router.get(
+  '/:id/fulfillments/export.csv',
+  requireAuth,
+  requireCampaignMember('owner','manager'),
+  asyncHandler(async (req, res) => {
+    const items = await getFulfillmentsByCampaign(req.params.id, { status: req.query.status });
+    const headers = ['id','tier_title','status','shipping_name','shipping_address_line1','shipping_address_line2','shipping_city','shipping_region','shipping_postal_code','shipping_country','tracking_number','carrier','created_at'];
+    const escape = v => v == null ? '' : `"${String(v).replace(/"/g,'""')}"`;
+    const csv = [headers.join(','), ...items.map(r => headers.map(h => escape(r[h])).join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="fulfillments-${req.params.id}.csv"`);
+    res.send(csv);
+  })
+);

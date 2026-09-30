@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
 const { contributionValidation, validateRequest } = require('../middleware/validation');
@@ -11,7 +11,7 @@ const pathPaymentPreviewService = require('../services/pathPaymentPreview');
 const contributionDiagnostics = require('../services/contributionDiagnostics');
 const { resolveReferralLink } = require('../services/referral');
 const { getReferralCodeFromRequest } = require('../services/referralService');
-const { reserveTierSlot } = require('../services/rewardTierService');
+const { reserveTierSlot, reserveInventory, claimInventory, releaseInventory, createFulfillment } = require('../services/rewardTierService');
 const { assertUserKycVerified } = require('../services/kycService');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { assertContributorMeetsRequirements } = require('../services/contributorIdentityService');
@@ -76,6 +76,7 @@ router.post(
       preview_token,
       selected_path_index,
       idempotency_key,
+      gift,
     } = req.body;
     const userId = req.user.userId;
 
@@ -140,14 +141,10 @@ router.post(
       await client.query('BEGIN');
 
       if (tier_id) {
-        const reserved = await reserveTierSlot(client, {
-          tierId: tier_id,
-          campaignId: campaign_id,
-        });
-        if (!reserved) {
-          await client.query('ROLLBACK');
-          return res.status(409).json({ error: 'Reward tier is no longer available' });
-        }
+        const reserved = await reserveTierSlot(client, { tierId: tier_id, campaignId: campaign_id });
+        if (!reserved) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Reward tier is no longer available' }); }
+        const invOk = await reserveInventory(client, { tierId: tier_id, contributionId: idempotency_key || campaign_id, quantity: 1 });
+        if (!invOk) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'REWARD_TIER_SOLD_OUT' }); }
       }
 
       // Cross-asset contributions may arrive with a single-use preview token from
@@ -176,6 +173,7 @@ router.post(
         amount,
         sendAsset,
         displayName: display_name,
+        gift,
         referralCode,
         referralLinkCode: referralLink?.code,
         referralLinkId: referralLink?.id,
@@ -385,3 +383,5 @@ router.get(
 );
 
 module.exports = router;
+
+
