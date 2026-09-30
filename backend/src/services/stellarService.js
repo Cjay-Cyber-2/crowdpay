@@ -648,6 +648,7 @@ async function buildWithdrawalTransaction({
   commissions = [],
   collectedFees = 0,
   creatorPublicKey = null,
+  timeoutSeconds = TX_TIMEOUT_WITHDRAWAL_S,
 }) {
   const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
   const stellarAsset = toStellarAsset(asset);
@@ -697,7 +698,7 @@ async function buildWithdrawalTransaction({
   }
 
   const tx = builder
-    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S) // platform approver may not be available immediately (see issue #128)
+    .setTimeout(timeoutSeconds) // defaults to 7 days: platform approver may not be available immediately (see issue #128)
     .build();
 
   return tx.toXDR();
@@ -756,11 +757,13 @@ function signatureCountFromXdr(xdr) {
  * Returns true if the XDR transaction's maxTime has already passed.
  * Returns false if the XDR cannot be parsed or has no time bounds set.
  */
-function isXdrExpired(xdr) {
+function isXdrExpired(xdr, graceSeconds = 0) {
   try {
     const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
     const { timeBounds } = tx;
-    return !!(timeBounds && Math.floor(Date.now() / 1000) > Number(timeBounds.maxTime));
+    return !!(
+      timeBounds && Math.floor(Date.now() / 1000) > Number(timeBounds.maxTime) + graceSeconds
+    );
   } catch {
     return false;
   }
@@ -1021,6 +1024,34 @@ async function submitPreparedTransaction(xdr) {
 
 async function submitSignedWithdrawal({ xdr }) {
   return submitPreparedTransaction(xdr);
+}
+
+/** Hex hash of a transaction envelope; known before submission, so it can be persisted first. */
+function transactionHashFromXdr(xdr) {
+  return TransactionBuilder.fromXDR(xdr, networkPassphrase).hash().toString('hex');
+}
+
+/**
+ * Look a transaction up on Horizon by hash.
+ * @returns {Promise<'success'|'failed'|'not_found'>}
+ */
+async function getTransactionOutcome(txHash) {
+  try {
+    const tx = await server.transactions().transaction(txHash).call();
+    return tx.successful === false ? 'failed' : 'success';
+  } catch (err) {
+    if (err?.response?.status === 404 || err?.name === 'NotFoundError') return 'not_found';
+    throw err;
+  }
+}
+
+/**
+ * True when Horizon definitively rejected a submission (HTTP 400 with result
+ * codes), as opposed to a timeout or network error where the transaction may
+ * still land.
+ */
+function isDefinitiveSubmissionFailure(err) {
+  return err?.response?.status === 400 && !!err?.response?.data?.extras?.result_codes;
 }
 
 /**
@@ -1473,6 +1504,9 @@ module.exports = {
   signatureCountFromXdr,
   isXdrExpired,
   submitSignedWithdrawal,
+  transactionHashFromXdr,
+  getTransactionOutcome,
+  isDefinitiveSubmissionFailure,
   recoverWalletFromSecret,
   getWalletTransactionHistory,
   getWalletPayments,

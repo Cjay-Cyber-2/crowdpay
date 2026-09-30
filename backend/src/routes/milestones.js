@@ -21,7 +21,11 @@ const { resolveUserCampaignRole } = require('../services/campaignInviteService')
 const { canSubmitMilestones } = require('../lib/campaignPermissions');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { invokeContract, nativeToScVal, releaseMilestone } = require('../services/sorobanService');
-const { uploadMilestoneEvidence } = require('../services/storage');
+const {
+  uploadMilestoneEvidence,
+  parseMilestoneEvidenceUrl,
+  milestoneEvidenceExists,
+} = require('../services/storage');
 const { createNotification } = require('../services/notifications');
 const { notifyFollowers } = require('../services/campaignFollowService');
 const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
@@ -30,6 +34,15 @@ const {
   sendMilestoneReleasedCreatorEmail,
   sendMilestoneEvidenceSubmittedAdminEmail,
 } = require('../services/emailService');
+const ledger = require('../services/milestoneLedger');
+const {
+  toReleaseAmount,
+  logWithdrawalEvent,
+  votesBlockRelease,
+  setCampaignStatusFromMilestoneProgress,
+} = ledger;
+const autoRelease = require('../services/milestoneAutoRelease');
+const { logAuditEvent } = require('../services/auditService');
 const asyncHandler = require('../utils/asyncHandler');
 const { validateRenderUrl } = require('../utils/urlValidation');
 
@@ -66,10 +79,6 @@ function validatePublicKey(publicKey) {
   }
 }
 
-function toReleaseAmount(raisedAmount, releasePercentage) {
-  return ((Number(raisedAmount) * Number(releasePercentage)) / 100).toFixed(7);
-}
-
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MILESTONE_EVIDENCE_MAX_FILE_SIZE },
@@ -91,13 +100,8 @@ const evidenceUpload = multer({
   },
 });
 
-async function logMilestoneEvent(client, { milestoneId, actorUserId, action, note, metadata }) {
-  const queryClient = client || db;
-  await queryClient.query(
-    `INSERT INTO milestone_events (milestone_id, actor_id, action, note, metadata)
-     VALUES ($1, $2, $3, $4, $5::jsonb)`,
-    [milestoneId, actorUserId || null, action, note || null, JSON.stringify(metadata || {})]
-  );
+function logMilestoneEvent(client, event) {
+  return ledger.logMilestoneEvent(client || db, event);
 }
 
 async function notifyAdminsOnEvidenceSubmitted({ milestone, campaignTitle, creatorName }) {
@@ -177,82 +181,8 @@ async function getMilestoneVoteContext(milestoneId, userId) {
   };
 }
 
-async function getMilestoneVoteTally(milestoneId, userId) {
-  const { rows } = await db.query(
-    `SELECT
-       COUNT(*) FILTER (WHERE vote = 'approve')::int AS approve_count,
-       COUNT(*) FILTER (WHERE vote = 'reject')::int AS reject_count,
-       COUNT(*)::int AS total_votes
-     FROM milestone_votes
-     WHERE milestone_id = $1`,
-    [milestoneId]
-  );
-  const tally = rows[0] || {};
-  const approveCount = Number(tally.approve_count || 0);
-  const rejectCount = Number(tally.reject_count || 0);
-  const totalVotes = Number(tally.total_votes || 0);
-  let userVote = null;
-
-  if (userId) {
-    const { rows: userRows } = await db.query(
-      `SELECT vote, note, created_at, updated_at
-       FROM milestone_votes
-       WHERE milestone_id = $1 AND user_id = $2`,
-      [milestoneId, userId]
-    );
-    userVote = userRows[0] || null;
-  }
-
-  return {
-    approve_count: approveCount,
-    reject_count: rejectCount,
-    total_votes: totalVotes,
-    approval_ratio: totalVotes ? approveCount / totalVotes : null,
-    user_vote: userVote,
-  };
-}
-
-async function logWithdrawalEvent(
-  client,
-  { withdrawalRequestId, actorUserId, action, note, metadata }
-) {
-  await client.query(
-    `INSERT INTO withdrawal_approval_events
-       (withdrawal_request_id, actor_user_id, action, note, metadata)
-     VALUES ($1, $2, $3, $4, $5::jsonb)`,
-    [
-      withdrawalRequestId,
-      actorUserId || null,
-      action,
-      note || null,
-      metadata ? JSON.stringify(metadata) : null,
-    ]
-  );
-}
-
-async function setCampaignStatusFromMilestoneProgress(client, campaignId) {
-  const { rows } = await client.query(
-    `SELECT
-       COUNT(*)::int AS total,
-       COUNT(*) FILTER (WHERE status = 'released')::int AS released_count
-     FROM milestones
-     WHERE campaign_id = $1`,
-    [campaignId]
-  );
-  const total = rows[0]?.total || 0;
-  const releasedCount = rows[0]?.released_count || 0;
-
-  if (!total || !releasedCount) return null;
-
-  const nextStatus = releasedCount >= total ? 'completed' : 'in_progress';
-  const { rows: updated } = await client.query(
-    `UPDATE campaigns
-     SET status = $1
-     WHERE id = $2 AND status IN ('funded', 'in_progress', 'completed')
-     RETURNING id, status`,
-    [nextStatus, campaignId]
-  );
-  return updated[0] || null;
+function getMilestoneVoteTally(milestoneId, userId) {
+  return ledger.getMilestoneVoteTally(db, milestoneId, userId);
 }
 
 router.get(
@@ -290,6 +220,15 @@ router.post('/', requireAuth, async (req, res) => {
   const percentage = Number(releasePercentage);
   if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) {
     return res.status(400).json({ error: 'release_percentage must be between 0 and 100' });
+  }
+
+  let autoReleaseConfig = { enabled: false };
+  if (req.body?.auto_release !== undefined) {
+    try {
+      autoReleaseConfig = autoRelease.parseAutoReleaseConfig(req.body.auto_release);
+    } catch (err) {
+      return res.status(err.status || 422).json({ error: err.message, code: err.code });
+    }
   }
 
   const client = await db.connect();
@@ -330,8 +269,10 @@ router.post('/', requireAuth, async (req, res) => {
     }
 
     const { rows } = await client.query(
-      `INSERT INTO milestones (campaign_id, title, description, release_percentage, sort_order)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO milestones (campaign_id, title, description, release_percentage, sort_order,
+                               auto_release_enabled, auto_release_rule, auto_release_rule_config,
+                               auto_release_window_seconds, auto_release_status, auto_release_configured_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, CASE WHEN $6 THEN NOW() END)
        RETURNING *`,
       [
         campaignId,
@@ -339,8 +280,25 @@ router.post('/', requireAuth, async (req, res) => {
         String(description || '').trim() || null,
         percentage.toFixed(4),
         Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : stats[0]?.count || 0,
+        autoReleaseConfig.enabled,
+        autoReleaseConfig.enabled ? autoReleaseConfig.rule : null,
+        JSON.stringify(autoReleaseConfig.enabled ? autoReleaseConfig.ruleConfig : {}),
+        autoReleaseConfig.enabled ? autoReleaseConfig.windowSeconds : null,
+        autoReleaseConfig.enabled ? 'awaiting_evidence' : null,
       ]
     );
+    if (autoReleaseConfig.enabled) {
+      await logMilestoneEvent(client, {
+        milestoneId: rows[0].id,
+        actorUserId: req.user.userId,
+        action: 'auto_release_configured',
+        metadata: {
+          rule: autoReleaseConfig.rule,
+          rule_config: autoReleaseConfig.ruleConfig,
+          dispute_window_seconds: autoReleaseConfig.windowSeconds,
+        },
+      });
+    }
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -398,11 +356,9 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
     return res.status(err.status || 403).json({ error: err.message });
   }
   if (!['funded', 'in_progress'].includes(milestone.campaign_status)) {
-    return res
-      .status(409)
-      .json({
-        error: `Milestone submission is not available while campaign status is "${milestone.campaign_status}".`,
-      });
+    return res.status(409).json({
+      error: `Milestone submission is not available while campaign status is "${milestone.campaign_status}".`,
+    });
   }
   if (milestone.status === 'released') {
     return res.status(409).json({ error: 'This milestone has already been released' });
@@ -416,6 +372,24 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
     return res
       .status(409)
       .json({ error: `Cannot submit evidence while milestone status is "${milestone.status}"` });
+  }
+
+  // Auto-releasing milestones: confirm the evidence object really exists in
+  // platform storage before the dispute-window countdown can start.
+  let evidenceExists = null;
+  if (milestone.auto_release_enabled) {
+    const parsedEvidence = parseMilestoneEvidenceUrl(milestone.id, normalizedUrl);
+    if (!parsedEvidence) {
+      evidenceExists = false;
+    } else {
+      evidenceExists = await milestoneEvidenceExists(parsedEvidence.key).catch(err => {
+        logger.warn('Milestone evidence existence check failed', {
+          milestone_id: milestone.id,
+          error: err.message,
+        });
+        return null;
+      });
+    }
   }
 
   const client = await db.connect();
@@ -454,6 +428,10 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
       note: updatedMilestone.evidence_description,
       metadata: { evidence_url: updatedMilestone.evidence_url },
     });
+    const scheduled = await autoRelease.scheduleOnSubmission(client, updatedMilestone, {
+      evidenceExists,
+    });
+    if (scheduled) updatedMilestone = scheduled;
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -519,7 +497,10 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
       {
         type: 'milestone_evidence_submitted',
         title: `${milestone.campaign_title}: evidence submitted for "${milestone.title}"`,
-        body: 'The milestone is awaiting platform review.',
+        body:
+          updatedMilestone.auto_release_status === 'scheduled'
+            ? `Funds release automatically at ${new Date(updatedMilestone.auto_release_at).toISOString()} unless a backer opens a dispute before then.`
+            : 'The milestone is awaiting platform review.',
         link: `/campaigns/${milestone.campaign_id}`,
       },
       req.user.userId
@@ -574,6 +555,114 @@ router.post(
       res.status(500).json({ error: 'Could not upload evidence file' });
     }
   }
+);
+
+// Public: backers see the pending release, its evidence, rule and countdown.
+router.get(
+  '/:id/auto-release',
+  asyncHandler(async (req, res) => {
+    const { rows } = await db.query('SELECT * FROM milestones WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Milestone not found' });
+    res.json(autoRelease.describeAutoRelease(rows[0]));
+  })
+);
+
+// Creator opts a milestone in or out of automatic release. The rule and window
+// are fixed once evidence is submitted, so they are agreed before the fact;
+// opting out (which falls back to manual review) is allowed until release.
+router.put(
+  '/:id/auto-release',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    let config;
+    try {
+      config = autoRelease.parseAutoReleaseConfig(req.body);
+    } catch (err) {
+      return res
+        .status(err.status || 422)
+        .json({ error: err.message, code: err.code, ...autoRelease.windowPolicy() });
+    }
+
+    const { rows: milestones } = await db.query(
+      `SELECT m.*, c.creator_id
+     FROM milestones m
+     JOIN campaigns c ON c.id = m.campaign_id
+     WHERE m.id = $1`,
+      [req.params.id]
+    );
+    if (!milestones.length) return res.status(404).json({ error: 'Milestone not found' });
+    const milestone = milestones[0];
+    if (milestone.creator_id !== req.user.userId) {
+      return res
+        .status(403)
+        .json({ error: 'Only the campaign creator can configure automatic release' });
+    }
+    if (
+      ['releasing', 'released'].includes(milestone.auto_release_status) ||
+      milestone.status === 'released'
+    ) {
+      return res
+        .status(409)
+        .json({ error: 'This milestone has already been released or is being released' });
+    }
+
+    let updated;
+    if (config.enabled) {
+      if (!['pending', 'rejected'].includes(milestone.status)) {
+        return res.status(409).json({
+          error: 'Automatic release must be configured before evidence is submitted',
+          code: 'AUTO_RELEASE_LOCKED',
+        });
+      }
+      const { rows } = await db.query(
+        `UPDATE milestones
+       SET auto_release_enabled = TRUE,
+           auto_release_rule = $2,
+           auto_release_rule_config = $3::jsonb,
+           auto_release_window_seconds = $4,
+           auto_release_status = 'awaiting_evidence',
+           auto_release_configured_at = NOW(),
+           auto_release_scheduled_at = NULL,
+           auto_release_at = NULL,
+           auto_release_halted_at = NULL,
+           auto_release_halt_reason = NULL,
+           auto_release_dispute_id = NULL
+       WHERE id = $1 AND status IN ('pending', 'rejected')
+       RETURNING *`,
+        [milestone.id, config.rule, JSON.stringify(config.ruleConfig), config.windowSeconds]
+      );
+      updated = rows[0];
+    } else {
+      const { rows } = await db.query(
+        `UPDATE milestones
+       SET auto_release_enabled = FALSE,
+           auto_release_status = CASE WHEN auto_release_status IS NULL THEN NULL ELSE 'cancelled' END,
+           auto_release_at = NULL
+       WHERE id = $1 AND COALESCE(auto_release_status, '') NOT IN ('releasing', 'released')
+       RETURNING *`,
+        [milestone.id]
+      );
+      updated = rows[0];
+    }
+    if (!updated) {
+      return res.status(409).json({ error: 'Milestone changed while updating; please retry' });
+    }
+
+    await logMilestoneEvent(null, {
+      milestoneId: milestone.id,
+      actorUserId: req.user.userId,
+      action: config.enabled ? 'auto_release_configured' : 'auto_release_disabled',
+      metadata: config.enabled
+        ? {
+            rule: config.rule,
+            rule_config: config.ruleConfig,
+            dispute_window_seconds: config.windowSeconds,
+          }
+        : { previous_status: milestone.auto_release_status },
+    });
+
+    res.json(autoRelease.describeAutoRelease(updated));
+  })
 );
 
 router.get(
@@ -698,13 +787,18 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
          review_note = $1,
          approved_at = NULL,
          reviewer_id = $2,
-         reviewed_at = NOW()
+         reviewed_at = NOW(),
+         auto_release_status = CASE WHEN auto_release_enabled THEN 'awaiting_evidence' ELSE auto_release_status END,
+         auto_release_at = NULL
      WHERE id = $3 AND status = 'pending_review'
+       AND COALESCE(auto_release_status, '') <> 'releasing'
      RETURNING *`,
     [reason, req.user.userId, req.params.id]
   );
   if (!rows.length) {
-    return res.status(404).json({ error: 'Milestone not found or not awaiting review' });
+    return res
+      .status(404)
+      .json({ error: 'Milestone not found, not awaiting review, or being released automatically' });
   }
 
   await logMilestoneEvent(null, {
@@ -780,11 +874,9 @@ const approveMilestoneReleaseHandler = async (req, res) => {
   const milestone = milestoneRows[0];
 
   if (!['funded', 'in_progress'].includes(milestone.campaign_status)) {
-    return res
-      .status(409)
-      .json({
-        error: `Milestone approval is not available while campaign status is "${milestone.campaign_status}".`,
-      });
+    return res.status(409).json({
+      error: `Milestone approval is not available while campaign status is "${milestone.campaign_status}".`,
+    });
   }
   if (milestone.status !== 'pending_review') {
     return res
@@ -806,10 +898,7 @@ const approveMilestoneReleaseHandler = async (req, res) => {
   }
 
   const contributorTally = await getMilestoneVoteTally(milestone.id);
-  if (
-    contributorTally.total_votes > 0 &&
-    contributorTally.approve_count <= contributorTally.reject_count
-  ) {
+  if (votesBlockRelease(contributorTally)) {
     return res.status(409).json({
       error: 'Contributor vote threshold has not been met for this milestone release',
       contributor_votes: contributorTally,
@@ -990,7 +1079,10 @@ const approveMilestoneReleaseHandler = async (req, res) => {
            approved_at = COALESCE(approved_at, NOW()),
            released_at = NOW(),
            reviewer_id = $2,
-           reviewed_at = COALESCE(reviewed_at, NOW())
+           reviewed_at = COALESCE(reviewed_at, NOW()),
+           release_trigger = 'manual',
+           auto_release_status = CASE WHEN auto_release_status IS NULL THEN NULL ELSE 'superseded' END,
+           auto_release_at = NULL
        WHERE id = $3
        RETURNING *`,
       [reviewNote, req.user.userId, milestone.id]
@@ -1051,6 +1143,22 @@ const approveMilestoneReleaseHandler = async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    logAuditEvent({
+      actorId: req.user.userId,
+      action: 'milestone.released',
+      resourceType: 'milestone',
+      resourceId: milestone.id,
+      metadata: {
+        release_mode: 'manual',
+        campaign_id: milestone.campaign_id,
+        withdrawal_request_id: withdrawalRequest.id,
+        release_amount: releaseAmount,
+        tx_hash: txHash,
+        superseded_auto_release_status: milestone.auto_release_status || null,
+      },
+      req,
+    }).catch(e => logger.error('Milestone release audit log failed', { error: e.message }));
 
     setImmediate(() => {
       emitWebhookEventForUser(milestone.creator_id, WEBHOOK_EVENTS.MILESTONE_APPROVED, {
