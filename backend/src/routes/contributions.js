@@ -2,6 +2,7 @@
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
 const { contributionValidation, validateRequest } = require('../middleware/validation');
+const { param, body } = require('express-validator');
 const { contributionRateLimiter } = require('../middleware/contributionRateLimiter');
 const contributionService = require('../services/contributionService');
 const stellarService = require('../services/stellarService');
@@ -16,6 +17,10 @@ const { assertUserKycVerified } = require('../services/kycService');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { assertContributorMeetsRequirements } = require('../services/contributorIdentityService');
 const { assertContributionPolicy } = require('../services/contributionPolicy');
+const {
+  setContributionAttribution,
+  ATTRIBUTION_MODES,
+} = require('../services/contributionAttributionService');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const asyncHandler = require('../utils/asyncHandler');
@@ -73,6 +78,7 @@ router.post(
       send_asset,
       tier_id,
       display_name,
+      attribution_mode,
       preview_token,
       selected_path_index,
       idempotency_key,
@@ -173,6 +179,7 @@ router.post(
         amount,
         sendAsset,
         displayName: display_name,
+        attributionMode: attribution_mode,
         gift,
         referralCode,
         referralLinkCode: referralLink?.code,
@@ -379,6 +386,45 @@ router.get(
     }
 
     return res.json({ diagnosis: report });
+  })
+);
+
+/**
+ * PATCH /api/contributions/:id/attribution
+ *
+ * Change how one of the caller's own contributions appears publicly (#944).
+ * Only the contributor who made the contribution may change it, and the
+ * private wallet/payment record is never altered - only the fields that public
+ * views are allowed to serialize.
+ */
+router.patch(
+  '/:id/attribution',
+  requireAuth,
+  [
+    param('id').isUUID().withMessage('id must be a valid UUID'),
+    body('attribution_mode')
+      .isIn(ATTRIBUTION_MODES)
+      .withMessage(`attribution_mode must be one of: ${ATTRIBUTION_MODES.join(', ')}`),
+    body('display_name')
+      .optional({ nullable: true })
+      .isLength({ max: 50 })
+      .withMessage('Display name must be at most 50 characters'),
+  ],
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const updated = await setContributionAttribution({
+      contributionId: req.params.id,
+      userId: req.user.userId,
+      mode: req.body.attribution_mode,
+      displayName: req.body.display_name,
+    });
+
+    return res.json({
+      id: updated.id,
+      campaign_id: updated.campaign_id,
+      display_name: updated.display_name,
+      attribution_mode: updated.attribution_mode,
+    });
   })
 );
 

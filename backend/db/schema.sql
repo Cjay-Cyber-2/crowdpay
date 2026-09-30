@@ -98,6 +98,8 @@ CREATE TABLE contributions (
   diagnosis           TEXT,
   tx_hash             TEXT UNIQUE NOT NULL,  -- deduplicate by Stellar transaction hash
   display_name        VARCHAR(50),
+  attribution_mode    VARCHAR(16) NOT NULL DEFAULT 'public'
+                        CHECK (attribution_mode IN ('public', 'display_name', 'anonymous')),
   refunded            BOOLEAN NOT NULL DEFAULT FALSE,
   refund_status       TEXT CHECK (refund_status IN ('partial', 'full')),
   platform_fee_amount NUMERIC(20, 7),

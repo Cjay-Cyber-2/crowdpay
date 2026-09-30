@@ -31,6 +31,10 @@ const {
 } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const {
+  resolveStoredAttributionMode,
+  serializePublicAttribution,
+} = require('../services/contributionAttributionService');
+const {
   refreshCampaignStatus,
   refreshActiveCampaignStatuses,
 } = require('../services/campaignStatusService');
@@ -1815,9 +1819,10 @@ router.get(
     const total = countResult.rows[0].total;
 
     const query = `
-    SELECT 
+    SELECT
       ctr.display_name,
       ctr.sender_public_key,
+      ctr.attribution_mode,
       COALESCE(u.contributor_privacy, 'full') AS contributor_privacy,
       ${show_backer_amounts ? 'ctr.amount,' : ''}
       ctr.asset,
@@ -1830,44 +1835,21 @@ router.get(
   `;
     const { rows } = await db.query(query, [campaignId, limit, offset]);
 
-    // Apply contributor privacy settings
-    const filteredRows = rows.map(row => {
-      const privacy = row.contributor_privacy || 'full';
-      const campaignHidesAmounts = !show_backer_amounts;
-
-      // Apply the more restrictive setting
-      if (privacy === 'anonymous' || campaignHidesAmounts) {
-        return {
-          display_name: null,
-          sender_public_key: null,
-          amount: null,
-          asset: row.asset,
-          created_at: row.created_at,
-          contributor_privacy: privacy,
-        };
-      }
-
-      if (privacy === 'amount_only') {
-        return {
-          display_name: null,
-          sender_public_key: null,
-          amount: row.amount,
-          asset: row.asset,
-          created_at: row.created_at,
-          contributor_privacy: privacy,
-        };
-      }
-
-      // full mode - show everything (subject to campaign-level show_backer_amounts)
-      return {
-        display_name: row.display_name,
-        sender_public_key: row.sender_public_key,
-        amount: row.amount,
-        asset: row.asset,
-        created_at: row.created_at,
-        contributor_privacy: privacy,
-      };
-    });
+    // Apply the contributor-chosen attribution (#944) combined with the
+    // account-wide privacy preference. The more private of the two wins, so a
+    // contributor who opted down to anonymous is never surfaced publicly.
+    const filteredRows = rows.map(row =>
+      serializePublicAttribution(
+        {
+          ...row,
+          attribution_mode: resolveStoredAttributionMode({
+            requestedMode: row.attribution_mode,
+            contributorPrivacy: row.contributor_privacy,
+          }),
+        },
+        { showAmount: Boolean(show_backer_amounts) }
+      )
+    );
 
     res.json({ data: filteredRows, total, limit, offset });
   })

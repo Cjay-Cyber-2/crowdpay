@@ -331,6 +331,10 @@ const contributionValidation = [
     })
     .isLength({ max: 50 })
     .withMessage('Display name must be at most 50 characters'),
+  body('attribution_mode')
+    .optional({ nullable: true })
+    .isIn(['public', 'display_name', 'anonymous'])
+    .withMessage('attribution_mode must be one of: public, display_name, anonymous'),
   body('gift').optional({ nullable: true }).isObject().withMessage('gift must be an object'),
   body('gift.recipient_email')
     .if(body('gift').isObject({ strict: true }))
