@@ -8,6 +8,39 @@ function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 }
 
+const UPDATE_EXCERPT_LENGTH = 200;
+
+/**
+ * The single public/notification representation of a campaign update. Both the
+ * publication/notification path and the creator preview endpoint use this so a
+ * preview cannot diverge from what is actually published (#945).
+ */
+function renderUpdate({ campaignId, campaignTitle, update = {} }) {
+  const body = String(update.body || '');
+  const excerpt =
+    body.length > UPDATE_EXCERPT_LENGTH
+      ? `${body.slice(0, UPDATE_EXCERPT_LENGTH).trim()}…`
+      : body;
+
+  const attachments = Array.isArray(update.attachments) ? update.attachments : [];
+
+  const isPublished = update.status === 'published' || update.status === undefined || update.status === null;
+
+  return {
+    id: update.id || null,
+    campaign_id: campaignId,
+    title: update.title || '',
+    body,
+    attachments,
+    status: update.status || 'published',
+    scheduled_for: update.scheduled_for || null,
+    published_at: isPublished ? update.updated_at || update.created_at || null : null,
+    link: `${frontendBaseUrl()}/campaigns/${campaignId}`,
+    excerpt,
+    notification_title: `${campaignTitle}: ${update.title || ''}`,
+  };
+}
+
 /**
  * Dispatches notifications and emails to campaign followers and contributors.
  *
@@ -18,9 +51,9 @@ function frontendBaseUrl() {
  * @param {string} params.authorId
  */
 async function sendCampaignUpdateNotifications({ campaignId, campaignTitle, update, authorId }) {
-  const campaignUrl = `${frontendBaseUrl()}/campaigns/${campaignId}`;
-  const updateExcerpt =
-    update.body.length > 200 ? `${update.body.slice(0, 200).trim()}…` : update.body;
+  const rendered = renderUpdate({ campaignId, campaignTitle, update });
+  const campaignUrl = rendered.link;
+  const updateExcerpt = rendered.excerpt;
 
   try {
     const { rows: contributors } = await db.query(
@@ -152,6 +185,7 @@ async function publishDueCampaignUpdates() {
 }
 
 module.exports = {
+  renderUpdate,
   sendCampaignUpdateNotifications,
   publishDueCampaignUpdates,
 };
