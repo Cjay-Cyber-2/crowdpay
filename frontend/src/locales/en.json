@@ -191,7 +191,10 @@
     },
     "sortNewest": "Newest",
     "sortTrending": "🔥 Trending",
-    "sortMostFunded": "Most funded"
+    "sortMostFunded": "Most funded",
+    "followCategoryHint": "Follow a category to receive new campaigns in your weekly digest.",
+    "following": "Following",
+    "follow": "Follow"
   },
   "campaignCard": {
     "noImage": "No campaign image",
@@ -759,5 +762,13 @@
     "closed": "Matching pledge closed.",
     "closeFailed": "Could not close the matching pledge.",
     "remainingPool": "{{amount}} of matching funds still available"
+  },
+  "categoryDigest": {
+    "title": "Followed Categories",
+    "description": "Follow categories to receive new campaigns in your weekly digest.",
+    "empty": "You are not following any categories yet.",
+    "loading": "Loading categories…",
+    "loadError": "Could not load categories",
+    "tryAgain": "Try again"
   }
 }

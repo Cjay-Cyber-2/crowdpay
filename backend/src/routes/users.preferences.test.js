@@ -65,6 +65,7 @@ test('GET /api/users/me/notification-preferences reflects notification_preferenc
     disputes: true,
     milestones: true,
     marketing: false,
+    category_digest: true,
   });
 });
 
@@ -97,5 +98,38 @@ test('PATCH /api/users/me/notification-preferences stores preferences', async ()
   const insert = calls.find(call => call.text.includes('INSERT INTO notification_preferences'));
   assert.ok(insert);
 
-  assert.deepEqual(insert.params, ['user-1', false, null, null, null, false]);
+  assert.deepEqual(insert.params, ['user-1', false, null, null, null, false, null]);
+});
+
+test('PATCH /api/users/me/notification-preferences stores category_digest', async () => {
+  const calls = [];
+  const app = buildApp(async (text, params) => {
+    calls.push({ text, params });
+    if (text.includes('INSERT INTO notification_preferences')) {
+      return {
+        rows: [
+          {
+            campaign_updates: true,
+            refunds: true,
+            disputes: true,
+            milestones: true,
+            marketing: false,
+            category_digest: false,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+
+  const res = await request(app)
+    .patch('/api/users/me/notification-preferences')
+    .send({ category_digest: false });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.category_digest, false);
+
+  const insert = calls.find(call => call.text.includes('INSERT INTO notification_preferences'));
+  assert.ok(insert.text.includes('category_digest'));
+  assert.deepEqual(insert.params, ['user-1', null, null, null, null, null, false]);
 });

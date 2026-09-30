@@ -133,17 +133,32 @@ async function isUnsubscribed(email, category) {
     refund: 'refunds',
     milestone: 'milestones',
     dispute: 'disputes',
+    category_digest: 'category_digest',
+    weekly_digest: 'marketing',
   };
   const mapped = map[category] || 'campaign_updates';
 
-  const { rows } = await db.query('SELECT * FROM notification_preferences WHERE user_id = $1', [
-    users[0].id,
-  ]);
+  let rows = [];
+  try {
+    const result = await db.query('SELECT * FROM notification_preferences WHERE user_id = $1', [
+      users[0].id,
+    ]);
+    rows = result.rows;
+  } catch (err) {
+    // Pre-migration database without the category_digest column.
+    if (err?.code !== '42703') throw err;
+    const result = await db.query(
+      'SELECT user_id, campaign_updates, refunds, disputes, milestones, marketing FROM notification_preferences WHERE user_id = $1',
+      [users[0].id]
+    );
+    rows = result.rows;
+  }
   if (!rows.length) {
-    // defaults: marketing off, others on
+    // defaults: marketing off, category digest on, others on
     return mapped === 'marketing';
   }
 
+  if (mapped === 'category_digest' && rows[0].category_digest === undefined) return false;
   return !rows[0][mapped];
 }
 

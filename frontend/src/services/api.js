@@ -636,4 +636,30 @@ export const api = {
 
   processRefund: (campaignId, payload) =>
     apiClient.post(`/campaigns/${campaignId}/refunds`, payload).then((r) => r.data),
+
+  // --- Campaign follows (per-campaign watch with per-event toggles) ---
+  getCampaignFollow: (campaignId) =>
+    apiClient.get(`/campaigns/${campaignId}/follow`).then((r) => r.data),
+
+  followCampaign: (campaignId, preferences) =>
+    apiClient.post(`/campaigns/${campaignId}/follow`, preferences || {}).then((r) => r.data),
+
+  updateCampaignFollow: (campaignId, preferences) =>
+    apiClient.patch(`/campaigns/${campaignId}/follow`, preferences).then((r) => r.data),
+
+  unfollowCampaign: (campaignId) =>
+    apiClient.delete(`/campaigns/${campaignId}/follow`).then((r) => r.data),
+
+  getFollowedCampaigns: () => apiClient.get('/users/me/following').then((r) => r.data),
+
+  // --- Category follows (#957: follow categories, digest of new campaigns) ---
+  getCategories: () => apiClient.get('/categories').then((r) => r.data),
+
+  getCategoryFollows: () => apiClient.get('/users/me/category-follows').then((r) => r.data),
+
+  followCategory: (category) =>
+    apiClient.post('/users/me/category-follows', { category }).then((r) => r.data),
+
+  unfollowCategory: (category) =>
+    apiClient.delete(`/users/me/category-follows/${category}`).then((r) => r.data),
 };

@@ -205,7 +205,10 @@
     "sortMostFunded": "Le plus financé",
     "loadError": "Impossible de charger les campagnes pour le moment. Veuillez vérifier votre connexion.",
     "loadErrorTitle": "Erreur de chargement",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "followCategoryHint": "Suivez une catégorie pour recevoir les nouvelles campagnes dans votre résumé hebdomadaire.",
+    "following": "Suivi",
+    "follow": "Suivre"
   },
   "campaignCard": {
     "noImage": "Aucune image de campagne",
@@ -759,5 +762,13 @@
     "closed": "Engagement de matching clôturé.",
     "closeFailed": "Impossible de clôturer l'engagement de matching.",
     "remainingPool": "{{amount}} de fonds de matching encore disponibles"
+  },
+  "categoryDigest": {
+    "title": "Catégories suivies",
+    "description": "Suivez des catégories pour recevoir les nouvelles campagnes dans votre résumé hebdomadaire.",
+    "empty": "Vous ne suivez aucune catégorie pour le moment.",
+    "loading": "Chargement des catégories…",
+    "loadError": "Impossible de charger les catégories",
+    "tryAgain": "Réessayer"
   }
 }

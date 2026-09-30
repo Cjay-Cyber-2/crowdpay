@@ -104,6 +104,7 @@ app.use('/api/sponsor-matching', require('./routes/sponsorMatching').campaignRou
 app.use('/api/sponsor-matching', require('./routes/sponsorMatching').userRouter);
 app.use('/api/stellar-transactions', require('./routes/stellarTransactions'));
 app.use('/api', require('./routes/subscriptions'));
+app.use('/api', require('./routes/categoryFollows'));
 app.use('/api', require('./routes/thankYou'));
 app.use('/api/translations', require('./routes/translations'));
 app.use('/api/treasury', require('./routes/treasury'));

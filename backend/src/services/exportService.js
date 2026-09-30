@@ -37,6 +37,7 @@ async function generateUserExport(userId, exportId) {
       disputesRes,
       subscriptionsRes,
       credentialsRes,
+      categoryFollowsRes,
     ] = await Promise.all([
       db.query(
         `SELECT id, email, name, role, created_at, wallet_public_key FROM users WHERE id = $1`,
@@ -67,6 +68,13 @@ async function generateUserExport(userId, exportId) {
         `SELECT id, label, scopes, expires_at, created_at FROM api_keys WHERE user_id = $1`,
         [userId]
       ),
+      db
+        .query(`SELECT category, created_at FROM category_follows WHERE user_id = $1`, [userId])
+        .catch(err => {
+          // Pre-migration database without the category_follows table.
+          if (err?.code === '42P01') return { rows: [] };
+          throw err;
+        }),
     ]);
 
     let notificationsRes = { rows: [] };
@@ -85,6 +93,7 @@ async function generateUserExport(userId, exportId) {
       sessions: sessionsRes.rows,
       contributions: contributionsRes.rows,
       preferences: preferencesRes.rows[0],
+      category_follows: categoryFollowsRes.rows,
       notifications: notificationsRes.rows,
       referrals: referralsRes.rows,
       disputes: disputesRes.rows,

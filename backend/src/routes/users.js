@@ -242,12 +242,25 @@ router.get(
   '/me/notification-preferences',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { rows } = await db.query(
-      'SELECT campaign_updates, refunds, disputes, milestones, marketing FROM notification_preferences WHERE user_id = $1',
-      [req.user.userId]
-    );
+    let rows;
+    try {
+      const result = await db.query(
+        'SELECT campaign_updates, refunds, disputes, milestones, marketing, category_digest FROM notification_preferences WHERE user_id = $1',
+        [req.user.userId]
+      );
+      rows = result.rows;
+    } catch (err) {
+      // Backward compatibility: column appears via 20260930 migration; if a
+      // deployment serves traffic mid-rollout, fall back to the legacy shape.
+      if (err?.code !== '42703') throw err;
+      const result = await db.query(
+        'SELECT campaign_updates, refunds, disputes, milestones, marketing FROM notification_preferences WHERE user_id = $1',
+        [req.user.userId]
+      );
+      rows = result.rows;
+    }
     if (rows.length > 0) {
-      res.json(rows[0]);
+      res.json({ category_digest: true, ...rows[0] });
     } else {
       res.json({
         campaign_updates: true,
@@ -255,6 +268,7 @@ router.get(
         disputes: true,
         milestones: true,
         marketing: false,
+        category_digest: true,
       });
     }
   })
@@ -264,10 +278,38 @@ router.patch(
   '/me/notification-preferences',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { campaign_updates, refunds, disputes, milestones, marketing } = req.body;
+    const { campaign_updates, refunds, disputes, milestones, marketing, category_digest } =
+      req.body;
     const toNull = v => (v === undefined ? null : v);
-    const { rows } = await db.query(
-      `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing)
+    const params = [
+      req.user.userId,
+      toNull(campaign_updates),
+      toNull(refunds),
+      toNull(disputes),
+      toNull(milestones),
+      toNull(marketing),
+      toNull(category_digest),
+    ];
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing, category_digest)
+     VALUES ($1, COALESCE($2, TRUE), COALESCE($3, TRUE), COALESCE($4, TRUE), COALESCE($5, TRUE), COALESCE($6, FALSE), COALESCE($7, TRUE))
+     ON CONFLICT (user_id) DO UPDATE SET
+       campaign_updates = COALESCE($2, notification_preferences.campaign_updates),
+       refunds = COALESCE($3, notification_preferences.refunds),
+       disputes = COALESCE($4, notification_preferences.disputes),
+       milestones = COALESCE($5, notification_preferences.milestones),
+       marketing = COALESCE($6, notification_preferences.marketing),
+       category_digest = COALESCE($7, notification_preferences.category_digest),
+       updated_at = NOW()
+     RETURNING campaign_updates, refunds, disputes, milestones, marketing, category_digest`,
+        params
+      );
+      res.json(rows[0]);
+    } catch (err) {
+      if (err?.code !== '42703') throw err;
+      const { rows } = await db.query(
+        `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing)
      VALUES ($1, COALESCE($2, TRUE), COALESCE($3, TRUE), COALESCE($4, TRUE), COALESCE($5, TRUE), COALESCE($6, FALSE))
      ON CONFLICT (user_id) DO UPDATE SET
        campaign_updates = COALESCE($2, notification_preferences.campaign_updates),
@@ -277,16 +319,10 @@ router.patch(
        marketing = COALESCE($6, notification_preferences.marketing),
        updated_at = NOW()
      RETURNING campaign_updates, refunds, disputes, milestones, marketing`,
-      [
-        req.user.userId,
-        toNull(campaign_updates),
-        toNull(refunds),
-        toNull(disputes),
-        toNull(milestones),
-        toNull(marketing),
-      ]
-    );
-    res.json(rows[0]);
+        params.slice(0, 6)
+      );
+      res.json({ category_digest: true, ...rows[0] });
+    }
   })
 );
 

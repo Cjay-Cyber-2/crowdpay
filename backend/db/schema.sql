@@ -488,6 +488,25 @@ CREATE TABLE notification_preferences (
   disputes BOOLEAN NOT NULL DEFAULT TRUE,
   milestones BOOLEAN NOT NULL DEFAULT TRUE,
   marketing BOOLEAN NOT NULL DEFAULT FALSE,
+  category_digest BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Category follows (#957): users subscribe to campaign categories and receive
+-- matching campaigns inside the weekly digest. Mirrors
+-- db/migrations/20260930_category_follows.sql so both bootstrap paths agree.
+CREATE TABLE IF NOT EXISTS category_follows (
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category    TEXT NOT NULL CHECK (category IN (
+                'technology', 'community', 'arts', 'education',
+                'environment', 'health', 'business', 'open_source', 'other'
+              )),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, category)
+);
+
+CREATE INDEX IF NOT EXISTS category_follows_category_idx
+  ON category_follows (category);
+CREATE INDEX IF NOT EXISTS category_follows_user_idx
+  ON category_follows (user_id);
