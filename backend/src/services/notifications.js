@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
+const withTransaction = require('../utils/withTransaction');
 const channels = require('./notificationChannels');
 const fcmPush = require('./fcmPushService');
 
@@ -155,10 +156,8 @@ async function createNotificationsBulk(userIds, message, options = {}) {
 
 async function flushQuietHours(options = {}) {
   const nowHour = options.nowHour !== undefined ? options.nowHour : new Date().getHours();
-  const client = await db.connect();
   let rows = [];
-  try {
-    await client.query('BEGIN');
+  await withTransaction(async client => {
     const res = await client.query(
       `SELECT q.id, q.user_id, q.channel, q.type, q.title, q.body, q.link,
             s.push_token, s.slack_webhook_url, s.discord_webhook_url, s.sms_phone_number,
@@ -179,13 +178,7 @@ async function flushQuietHours(options = {}) {
         [rowIds]
       );
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    client.release();
-    throw err;
-  }
-  client.release();
+  }, db);
 
   // Group deliverable rows by (user_id, channel) so we can batch them into a
   // single digest message per user/channel pair.

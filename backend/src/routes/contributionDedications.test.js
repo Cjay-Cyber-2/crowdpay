@@ -360,11 +360,11 @@ test('DELETE /dedication — 204 removes dedication', async () => {
   const app = buildApp({
     queryImpl: async (sql) => {
       if (sql.includes('stellar_transactions')) return { rows: [CONTRIBUTION_ROW] };
-      if (sql.includes('FROM contribution_dedications')) return { rows: [DEDICATION_ROW] };
-      if (sql.includes('DELETE FROM')) {
+      if (sql.includes('DELETE FROM contribution_dedications')) {
         deleteCalled = true;
         return { rows: [] };
       }
+      if (sql.includes('FROM contribution_dedications')) return { rows: [DEDICATION_ROW] };
       return { rows: [] };
     },
   });

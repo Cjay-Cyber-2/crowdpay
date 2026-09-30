@@ -144,6 +144,15 @@ const FLAGS = {
     allowedRoles: null,
     allowedUserIds: null,
   },
+  'milestone-auto-release-cron': {
+    description:
+      'Enable the cron that fires automatic milestone releases once their dispute window elapses (kill switch)',
+    envVar: 'ENABLE_MILESTONE_AUTO_RELEASE_CRON',
+    defaultValue: true,
+    rolloutPct: null,
+    allowedRoles: null,
+    allowedUserIds: null,
+  },
 };
 
 // ─── Adapter Store ───────────────────────────────────────────────────

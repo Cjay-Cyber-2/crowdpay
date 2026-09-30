@@ -24,6 +24,7 @@ const { sendWeeklyContributorDigests } = require('./services/weeklyDigestService
 const { sendDeadlineReminders } = require('./services/deadlineReminderService');
 const { publishDueCampaignUpdates } = require('./services/campaignUpdatesPublishing');
 const { processDuePayoutSchedules } = require('./services/payoutScheduleService');
+const { processAutoReleases } = require('./services/milestoneAutoRelease');
 
 let intervals = [];
 let isShuttingDown = false;
@@ -167,6 +168,15 @@ async function startBackgroundWorkers() {
     processDuePayoutSchedules,
     5 * 60 * 1000,
     'recurring-payout-schedules-cron'
+  );
+
+  // Automatic milestone releases: 1 minute. Schedules live in the database and
+  // the first run happens at startup, so a restart never misses a window.
+  startInterval(
+    'milestone-auto-release-cron',
+    () => processAutoReleases(),
+    60 * 1000,
+    'milestone-auto-release-cron'
   );
 }
 
