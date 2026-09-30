@@ -92,7 +92,16 @@ jobs:
         run: |
           createdb -h localhost -U postgres crowdpay_schema_check
           DATABASE_URL="$DATABASE_URL_SCHEMA_CHECK" npm run migrate:fresh
-          DATABASE_URL="$DATABASE_URL_SCHEMA_CHECK" node db/verify-schema-convergence.js
+          DATABASE_URL="$DATABASE_URL_SCHEMA_CHECK" npm run verify-schema
+
+      - name: Compare migration-only and schema bootstrap snapshots
+        working-directory: ./backend
+        env:
+          DATABASE_URL_MIGRATION_CHECK: postgresql://postgres:password@localhost:5432/crowdpay_test
+          DATABASE_URL_SCHEMA_CHECK: postgresql://postgres:password@localhost:5432/crowdpay_schema_check
+        run: |
+          DATABASE_URL="$DATABASE_URL_MIGRATION_CHECK" npm run verify-schema -- --write-snapshot "$RUNNER_TEMP/migrations.json"
+          DATABASE_URL="$DATABASE_URL_SCHEMA_CHECK" npm run verify-schema -- --compare-snapshot "$RUNNER_TEMP/migrations.json"
           dropdb -h localhost -U postgres crowdpay_schema_check
 
       - name: Run test suite
