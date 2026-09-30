@@ -217,7 +217,8 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
-});
+})
+);
 
 // GET /campaigns/:id/disputes — admin only
 router.get(
@@ -329,7 +330,7 @@ router.post(
 );
 
 // PATCH /disputes/:id — admin updates status + resolution note
-router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.patch('/disputes/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { status, resolution_note } = req.body;
 
   const VALID_STATUSES = [
@@ -636,7 +637,8 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   } finally {
     client.release();
   }
-});
+})
+);
 
 // POST /admin/disputes/:id/decide — platform arbitrator decides the dispute outcome
 router.post(

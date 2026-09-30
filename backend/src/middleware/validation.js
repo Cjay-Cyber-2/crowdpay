@@ -202,7 +202,7 @@ const updateCampaignValidation = [
     .isLength({ max: 1000 })
     .withMessage('Description must be at most 1000 characters'),
   body('target_amount')
-    .optional({ nullable: true, checkFalsy: true })
+    .optional({ nullable: true })
     .isFloat({ gt: 0 })
     .withMessage('Target amount must be greater than zero')
     .bail()
@@ -221,15 +221,15 @@ const updateCampaignValidation = [
     .isLength({ max: 80 })
     .withMessage('Country must be at most 80 characters'),
   body('min_contribution')
-    .optional({ nullable: true, checkFalsy: true })
+    .optional({ nullable: true })
     .isFloat({ gt: 0 })
     .withMessage('Minimum contribution must be greater than zero'),
   body('max_contribution')
-    .optional({ nullable: true, checkFalsy: true })
+    .optional({ nullable: true })
     .isFloat({ gt: 0 })
     .withMessage('Maximum contribution must be greater than zero'),
   body('max_per_user')
-    .optional({ nullable: true, checkFalsy: true })
+    .optional({ nullable: true })
     .isFloat({ gt: 0 })
     .withMessage('Maximum per user must be greater than zero')
     .custom((value, { req }) => {

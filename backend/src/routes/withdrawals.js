@@ -137,7 +137,7 @@ router.get('/capabilities', requireAuth, (req, res) => {
   res.json({ can_approve_platform: canPerformPlatformSignature(req.user.userId) });
 });
 
-router.post('/request', requireAuth, withdrawalValidation, validateRequest, async (req, res) => {
+router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/withdrawals/request:
@@ -353,7 +353,7 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
   }
 });
 
-router.post('/:id/approve/creator', requireAuth, async (req, res) => {
+router.post('/:id/approve/creator', requireAuth, asyncHandler(async (req, res) => {
   const { rows: requests } = await db.query(
     `SELECT wr.*, c.creator_id, c.wallet_public_key AS campaign_wallet_public_key, c.asset_type, c.status AS campaign_status
      FROM withdrawal_requests wr
@@ -475,9 +475,10 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
     });
     res.status(500).json({ error: 'Could not record creator approval' });
   }
-});
+})
+);
 
-const platformApproveHandler = async (req, res) => {
+const platformApproveHandler = asyncHandler(async (req, res) => {
   const client = await (db.pool ? db.pool.connect() : db.connect());
   let fullySignedXdr;
 
@@ -809,13 +810,14 @@ const platformApproveHandler = async (req, res) => {
   }
 
   return res.status(200).json(updatedWithdrawalRow || { status: 'submitted', tx_hash: txHash });
-};
+})
+);
 
 router.post('/:id/approve/platform', requireAuth, requirePlatformApprover, platformApproveHandler);
 // Alias for docs + issue acceptance criteria
 router.post('/:id/approve', requireAuth, requirePlatformApprover, platformApproveHandler);
 
-router.post('/:id/cancel', requireAuth, async (req, res) => {
+router.post('/:id/cancel', requireAuth, asyncHandler(async (req, res) => {
   const reason = (req.body && req.body.reason) || 'Cancelled by creator';
 
   const { rows: requests } = await db.query(
@@ -874,9 +876,10 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     });
     res.status(500).json({ error: 'Could not cancel withdrawal request' });
   }
-});
+})
+);
 
-router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res) => {
+router.post('/:id/reject', requireAuth, requirePlatformApprover, asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/withdrawals/{id}/reject:
@@ -988,7 +991,8 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
     });
     res.status(500).json({ error: 'Could not reject withdrawal request' });
   }
-});
+})
+);
 
 router.get(
   '/campaign/:campaignId',
