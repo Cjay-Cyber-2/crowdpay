@@ -205,7 +205,10 @@
     "sortMostFunded": "Le plus financé",
     "loadError": "Impossible de charger les campagnes pour le moment. Veuillez vérifier votre connexion.",
     "loadErrorTitle": "Erreur de chargement",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "followCategoryHint": "Suivez une catégorie pour recevoir les nouvelles campagnes dans votre résumé hebdomadaire.",
+    "following": "Suivi",
+    "follow": "Suivre"
   },
   "campaignCard": {
     "noImage": "Aucune image de campagne",

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { api } from '../services/api';
+import CategoryFollows from '../components/CategoryFollows';
 
 const EVENT_TYPES = [
   {
@@ -26,6 +27,11 @@ const EVENT_TYPES = [
     id: 'marketing',
     label: 'Marketing & Weekly digest',
     description: 'A summary of activity delivered once a week',
+  },
+  {
+    id: 'category_digest',
+    label: 'Category digest',
+    description: 'New campaigns in the categories you follow, inside the weekly digest',
   },
 ];
 
@@ -80,6 +86,7 @@ export default function NotificationSettings() {
     disputes: true,
     milestones: true,
     marketing: false,
+    category_digest: true,
   });
   // Per-campaign overrides (#961). `campaignOverrides` only ever holds rows for
   // campaigns the caller actually muted something for.
@@ -91,7 +98,7 @@ export default function NotificationSettings() {
     try {
       const data = await api.getNotificationPreferences();
       if (data) {
-        setPrefs(data);
+        setPrefs((prev) => ({ ...prev, ...data }));
       }
     } catch (err) {
       toast(err.message || 'Failed to load notification settings', 'error');
@@ -175,6 +182,7 @@ export default function NotificationSettings() {
         disputes: true,
         milestones: true,
         marketing: true,
+        category_digest: true,
       };
     } else if (mode === 'important') {
       newPrefs = {
@@ -183,6 +191,7 @@ export default function NotificationSettings() {
         disputes: true,
         milestones: true,
         marketing: false,
+        category_digest: true,
       };
     } else if (mode === 'nothing') {
       newPrefs = {
@@ -191,6 +200,7 @@ export default function NotificationSettings() {
         disputes: false,
         milestones: false,
         marketing: false,
+        category_digest: false,
       };
     }
 

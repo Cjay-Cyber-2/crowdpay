@@ -9,7 +9,7 @@ test('sendWeeklyContributorDigests sends grouped digests and records delivery st
   const { sendWeeklyContributorDigests } = proxyquire('./weeklyDigestService', {
     '../config/database': {
       query: async (text, params) => {
-        if (text.includes('FROM contributions ctr') && text.includes('email_digest_deliveries')) {
+        if (text.includes('FROM users u') && text.includes('category_follows')) {
           return {
             rows: [
               {
@@ -20,6 +20,9 @@ test('sendWeeklyContributorDigests sends grouped digests and records delivery st
               },
             ],
           };
+        }
+        if (text.includes('FROM category_follows WHERE user_id')) {
+          return { rows: [] };
         }
         if (
           text.includes('FROM contributions ctr') &&
@@ -82,6 +85,9 @@ test('sendWeeklyContributorDigests sends grouped digests and records delivery st
       },
     },
     '../config/logger': { info: () => {} },
+    './categoryFollowService': {
+      listNewCampaignsInCategories: async () => [],
+    },
     './emailService': {
       sendWeeklyDigestEmail: async payload => {
         sent.push(payload);

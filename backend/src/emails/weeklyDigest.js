@@ -32,6 +32,12 @@ function list(items) {
 function campaignSection(campaign) {
   const sections = [];
 
+  if (campaign.isNew) {
+    sections.push(
+      `<p style="margin:0 0 8px;font-weight:bold;color:#0f1f3d;">New in ${escapeHtml(campaign.category || 'a followed category')}</p>`
+    );
+  }
+
   if (campaign.updates.length) {
     sections.push(
       `<p style="margin:0 0 8px;font-weight:bold;color:#0f1f3d;">Updates</p>${list(campaign.updates)}`
@@ -83,6 +89,7 @@ function build({ name, campaigns, unsubscribeUrl, digestUrl, windowLabel }) {
       const lines = [
         `${campaign.title} (${campaign.raisedLabel} of ${campaign.targetLabel}, ${clampPercent(campaign.progressPercent)}%)`,
       ];
+      if (campaign.isNew) lines.push(`New in ${campaign.category || 'a followed category'}`);
       if (campaign.updates.length) lines.push(`Updates: ${campaign.updates.join(' | ')}`);
       if (campaign.milestones.length) lines.push(`Milestones: ${campaign.milestones.join(' | ')}`);
       if (campaign.statusChanges.length)

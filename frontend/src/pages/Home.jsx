@@ -5,6 +5,11 @@ import { api } from '../services/api';
 import CampaignCard from '../components/CampaignCard';
 import CampaignCardSkeleton from '../components/skeletons/CampaignCardSkeleton';
 import { useAuth } from '../context/AuthContext';
+import {
+  CategoryFollowToggle,
+  FOLLOWABLE_CATEGORIES,
+  useCategoryFollows,
+} from '../components/CategoryFollows';
 import OnboardingCallout from '../components/OnboardingCallout';
 import {
   isContributorOnboardingVisible,
@@ -50,6 +55,11 @@ export default function Home() {
   const [recentlyViewed, setRecentlyViewed] = useState([]);
   const [recommended, setRecommended] = useState([]);
   const [requestVersion, setRequestVersion] = useState(0);
+  const {
+    followed: followedCategories,
+    pending: followPending,
+    toggle: toggleCategoryFollow,
+  } = useCategoryFollows();
 
   const search = searchParams.get('search') || '';
   const status = searchParams.get('status') || '';
@@ -612,6 +622,13 @@ export default function Home() {
       )}
 
       <h2 style={styles.sectionTitle}>{t('home.activeCampaigns')}</h2>
+      {user && (
+        <p
+          style={{ color: 'var(--color-text-hint)', fontSize: '0.85rem', marginBottom: '0.75rem' }}
+        >
+          Follow a category to receive new campaigns in your weekly digest.
+        </p>
+      )}
       <div style={styles.sortBar}>
         <button
           type="button"
@@ -621,14 +638,26 @@ export default function Home() {
           {t('home.allCategories')}
         </button>
         {categoryCounts.map((cat) => (
-          <button
+          <span
             key={cat.category}
-            type="button"
-            className={category === cat.category ? 'pill-active' : 'pill'}
-            onClick={() => setFilters({ category: cat.category })}
+            style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}
           >
-            {t(`home.categories.${cat.category}`, { defaultValue: cat.category })} ({cat.count})
-          </button>
+            <button
+              type="button"
+              className={category === cat.category ? 'pill-active' : 'pill'}
+              onClick={() => setFilters({ category: cat.category })}
+            >
+              {t(`home.categories.${cat.category}`, { defaultValue: cat.category })} ({cat.count})
+            </button>
+            {user && FOLLOWABLE_CATEGORIES.includes(cat.category) && (
+              <CategoryFollowToggle
+                category={cat.category}
+                following={followedCategories.has(cat.category)}
+                disabled={followPending.has(cat.category)}
+                onToggle={toggleCategoryFollow}
+              />
+            )}
+          </span>
         ))}
       </div>
 

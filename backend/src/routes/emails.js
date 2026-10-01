@@ -52,6 +52,7 @@ router.get(
       let mappedCategory = category;
       if (category === 'campaign_update') mappedCategory = 'campaign_updates';
       else if (category === 'weekly_digest') mappedCategory = 'marketing';
+      else if (category === 'category_digest') mappedCategory = 'category_digest';
       else if (category === 'refund') mappedCategory = 'refunds';
       else if (category === 'dispute') mappedCategory = 'disputes';
       else if (category === 'milestone') mappedCategory = 'milestones';
@@ -62,16 +63,33 @@ router.get(
         'disputes',
         'milestones',
         'marketing',
+        'category_digest',
       ];
       if (validCategories.includes(mappedCategory)) {
-        await db.query(
-          `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing)
+        // category_digest arrives via the 20260930 migration; fall back to
+        // the marketing switch on databases that have not migrated yet.
+        let targetColumn = mappedCategory;
+        try {
+          await db.query(
+            `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing)
          VALUES ($1, TRUE, TRUE, TRUE, TRUE, FALSE)
          ON CONFLICT (user_id) DO UPDATE SET
-           ${mappedCategory} = FALSE,
+           ${targetColumn} = FALSE,
            updated_at = NOW()`,
-          [users[0].id]
-        );
+            [users[0].id]
+          );
+        } catch (err) {
+          if (err?.code !== '42703' || targetColumn !== 'category_digest') throw err;
+          targetColumn = 'marketing';
+          await db.query(
+            `INSERT INTO notification_preferences (user_id, campaign_updates, refunds, disputes, milestones, marketing)
+         VALUES ($1, TRUE, TRUE, TRUE, TRUE, FALSE)
+         ON CONFLICT (user_id) DO UPDATE SET
+           ${targetColumn} = FALSE,
+           updated_at = NOW()`,
+            [users[0].id]
+          );
+        }
       }
     }
 

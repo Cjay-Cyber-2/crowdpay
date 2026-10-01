@@ -35,26 +35,77 @@ function buildWindowLabel(windowStart, windowEnd) {
 }
 
 async function listDigestRecipients(runAt) {
-  const { rows } = await db.query(
-    `SELECT u.id,
-            u.email,
-            u.name,
-            COALESCE(MAX(edd.window_ended_at), $1::timestamptz - INTERVAL '7 days') AS window_start
-     FROM contributions ctr
-     JOIN users u
-       ON u.wallet_public_key = ctr.sender_public_key
-     LEFT JOIN email_digest_deliveries edd
-       ON edd.user_id = u.id
-      AND edd.category = $2
-     LEFT JOIN email_unsubscribes eu
-       ON eu.email = LOWER(u.email)
-      AND eu.category = $2
-     WHERE u.email IS NOT NULL
-       AND eu.email IS NULL
-     GROUP BY u.id, u.email, u.name`,
-    [runAt.toISOString(), DIGEST_CATEGORY]
-  );
-  return rows;
+  try {
+    const { rows } = await db.query(
+      `SELECT u.id,
+              u.email,
+              u.name,
+              COALESCE(MAX(edd.window_ended_at), $1::timestamptz - INTERVAL '7 days') AS window_start
+       FROM users u
+       LEFT JOIN contributions ctr
+         ON u.wallet_public_key = ctr.sender_public_key
+       LEFT JOIN category_follows cf
+         ON cf.user_id = u.id
+       LEFT JOIN email_digest_deliveries edd
+         ON edd.user_id = u.id
+        AND edd.category = $2
+       LEFT JOIN email_unsubscribes eu
+         ON eu.email = LOWER(u.email)
+        AND eu.category IN ($2, 'category_digest')
+       LEFT JOIN notification_preferences np
+         ON np.user_id = u.id
+       WHERE u.email IS NOT NULL
+         AND eu.email IS NULL
+         AND (ctr.sender_public_key IS NOT NULL OR cf.user_id IS NOT NULL)
+         AND COALESCE(np.category_digest, TRUE) = TRUE
+       GROUP BY u.id, u.email, u.name`,
+      [runAt.toISOString(), DIGEST_CATEGORY]
+    );
+    return rows;
+  } catch (err) {
+    // Backward compatibility: pre-migration database without category_follows
+    // or notification_preferences.category_digest serves contributors only.
+    if (err?.code !== '42P01' && err?.code !== '42703') throw err;
+    const { rows } = await db.query(
+      `SELECT u.id,
+              u.email,
+              u.name,
+              COALESCE(MAX(edd.window_ended_at), $1::timestamptz - INTERVAL '7 days') AS window_start
+       FROM contributions ctr
+       JOIN users u
+         ON u.wallet_public_key = ctr.sender_public_key
+       LEFT JOIN email_digest_deliveries edd
+         ON edd.user_id = u.id
+        AND edd.category = $2
+       LEFT JOIN email_unsubscribes eu
+         ON eu.email = LOWER(u.email)
+        AND eu.category = $2
+       WHERE u.email IS NOT NULL
+         AND eu.email IS NULL
+       GROUP BY u.id, u.email, u.name`,
+      [runAt.toISOString(), DIGEST_CATEGORY]
+    );
+    return rows;
+  }
+}
+
+async function listFollowedCategoryNames(userId) {
+  try {
+    const { rows } = await db.query('SELECT category FROM category_follows WHERE user_id = $1', [
+      userId,
+    ]);
+    return rows.map(row => row.category);
+  } catch (err) {
+    // Pre-migration database without the category_follows table.
+    if (err?.code === '42P01') return [];
+    throw err;
+  }
+}
+
+async function listNewCampaignsInFollowedCategories({ categories, windowStart, windowEnd }) {
+  if (!categories.length) return [];
+  const { listNewCampaignsInCategories } = require('./categoryFollowService');
+  return listNewCampaignsInCategories(categories, windowStart, windowEnd);
 }
 
 async function listBackedCampaigns({ userId, email }) {
@@ -66,7 +117,9 @@ async function listBackedCampaigns({ userId, email }) {
             c.deadline,
             c.target_amount,
             c.raised_amount,
-            c.asset_type
+            c.asset_type,
+            c.category,
+            c.created_at
      FROM contributions ctr
      JOIN users u
        ON u.wallet_public_key = ctr.sender_public_key
@@ -125,7 +178,14 @@ async function listStatusChanges(campaignIds, windowStart, windowEnd) {
   return rows;
 }
 
-function buildCampaignDigest({ campaigns, updates, milestones, statuses, windowEnd }) {
+function buildCampaignDigest({
+  campaigns,
+  updates,
+  milestones,
+  statuses,
+  windowEnd,
+  newCampaignIds,
+}) {
   const updatesByCampaign = new Map();
   const milestonesByCampaign = new Map();
   const statusesByCampaign = new Map();
@@ -160,6 +220,13 @@ function buildCampaignDigest({ campaigns, updates, milestones, statuses, windowE
         upcomingDeadlines.push(`Deadline on ${toIsoDate(deadlineDate)}`);
       }
 
+      const isNew =
+        (newCampaignIds instanceof Set
+          ? newCampaignIds.has(campaign.id)
+          : Array.isArray(newCampaignIds)
+            ? newCampaignIds.includes(campaign.id)
+            : false) || false;
+
       return {
         id: campaign.id,
         title: campaign.title,
@@ -167,6 +234,8 @@ function buildCampaignDigest({ campaigns, updates, milestones, statuses, windowE
         raisedLabel: formatMoney(campaign.raised_amount, campaign.asset_type),
         targetLabel: formatMoney(campaign.target_amount, campaign.asset_type),
         progressPercent: progressPercent(campaign.raised_amount, campaign.target_amount),
+        category: campaign.category || null,
+        isNew,
         updates: updatesByCampaign.get(campaign.id) || [],
         milestones: milestonesByCampaign.get(campaign.id) || [],
         statusChanges: statusesByCampaign.get(campaign.id) || [],
@@ -175,6 +244,7 @@ function buildCampaignDigest({ campaigns, updates, milestones, statuses, windowE
     })
     .filter(
       campaign =>
+        campaign.isNew ||
         campaign.updates.length ||
         campaign.milestones.length ||
         campaign.statusChanges.length ||
@@ -209,8 +279,26 @@ async function sendWeeklyContributorDigests({ runAt = new Date() } = {}) {
   for (const recipient of recipients) {
     const windowStart = new Date(recipient.window_start);
     const windowEnd = new Date(runAt);
-    const campaigns = await listBackedCampaigns({ userId: recipient.id, email: recipient.email });
+    const [backedCampaigns, followedCategories] = await Promise.all([
+      listBackedCampaigns({ userId: recipient.id, email: recipient.email }),
+      listFollowedCategoryNames(recipient.id),
+    ]);
+    const categoryCampaigns = await listNewCampaignsInFollowedCategories({
+      categories: followedCategories,
+      windowStart,
+      windowEnd,
+    });
+
+    // Merge backed + followed-category campaigns, deduped by id so a backed
+    // campaign in a followed category appears once.
+    const campaignsById = new Map();
+    for (const campaign of backedCampaigns) campaignsById.set(campaign.id, campaign);
+    for (const campaign of categoryCampaigns) {
+      if (!campaignsById.has(campaign.id)) campaignsById.set(campaign.id, campaign);
+    }
+    const campaigns = [...campaignsById.values()];
     const campaignIds = campaigns.map(campaign => campaign.id);
+    const newCampaignIds = new Set(categoryCampaigns.map(campaign => campaign.id));
 
     if (!campaignIds.length) {
       skipped += 1;
@@ -229,6 +317,7 @@ async function sendWeeklyContributorDigests({ runAt = new Date() } = {}) {
       milestones,
       statuses,
       windowEnd,
+      newCampaignIds,
     });
 
     if (!digestCampaigns.length) {
@@ -239,6 +328,7 @@ async function sendWeeklyContributorDigests({ runAt = new Date() } = {}) {
     const itemCount = digestCampaigns.reduce(
       (total, campaign) =>
         total +
+        (campaign.isNew ? 1 : 0) +
         campaign.updates.length +
         campaign.milestones.length +
         campaign.statusChanges.length +
@@ -281,4 +371,6 @@ module.exports = {
   sendWeeklyContributorDigests,
   buildCampaignDigest,
   buildWindowLabel,
+  listFollowedCategoryNames,
+  listNewCampaignsInFollowedCategories,
 };

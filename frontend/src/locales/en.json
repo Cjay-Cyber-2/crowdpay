@@ -191,7 +191,10 @@
     },
     "sortNewest": "Newest",
     "sortTrending": "🔥 Trending",
-    "sortMostFunded": "Most funded"
+    "sortMostFunded": "Most funded",
+    "followCategoryHint": "Follow a category to receive new campaigns in your weekly digest.",
+    "following": "Following",
+    "follow": "Follow"
   },
   "campaignCard": {
     "noImage": "No campaign image",
