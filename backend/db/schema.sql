@@ -59,6 +59,8 @@ CREATE TABLE campaigns (
   share_count         INTEGER NOT NULL DEFAULT 0,
   velocity_alert_threshold NUMERIC(18, 7) DEFAULT 0,
   country             TEXT,
+  draft_version       INTEGER NOT NULL DEFAULT 1,
+  draft_saved_at      TIMESTAMPTZ,
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS campaign_updates (
@@ -73,6 +75,20 @@ CREATE TABLE IF NOT EXISTS campaign_updates (
 
 CREATE INDEX IF NOT EXISTS campaign_updates_campaign_created_idx
   ON campaign_updates (campaign_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS campaign_draft_versions (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  author_id   UUID REFERENCES users(id) ON DELETE SET NULL,
+  version     INTEGER NOT NULL,
+  reason      TEXT NOT NULL DEFAULT 'autosave'
+                CHECK (reason IN ('autosave', 'manual', 'restore')),
+  snapshot    JSONB NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS campaign_draft_versions_campaign_version_idx
+  ON campaign_draft_versions (campaign_id, version DESC);
 
 CREATE TABLE contributions (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

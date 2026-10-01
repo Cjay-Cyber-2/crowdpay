@@ -36,6 +36,7 @@ const {
   cleanupStreamForWallet,
 } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const draftVersionService = require('../services/campaignDraftVersionService');
 const {
   refreshCampaignStatus,
   refreshActiveCampaignStatuses,
@@ -3566,6 +3567,96 @@ router.post(
       adminNote: isAdmin ? adminNote : null,
     });
     res.status(201).json(refund);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Campaign draft autosave + recoverable version history (#942)
+// ---------------------------------------------------------------------------
+
+function mapDraftError(err, res) {
+  if (err.code === 'DRAFT_VERSION_CONFLICT') {
+    return res.status(409).json({ error: err.message, code: err.code, current_version: err.currentVersion });
+  }
+  if (err.statusCode === 404) {
+    return res.status(404).json({ error: err.message });
+  }
+  throw err;
+}
+
+// Autosave editable draft fields with optimistic concurrency. `base_version`
+// (or a `draft_version` body field) is the version the editor started from; a
+// mismatch returns 409 and both versions stay recoverable.
+router.put(
+  '/:id/draft',
+  requireAuth,
+  requireCampaignMember('owner', 'manager', 'editor'),
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await draftVersionService.saveDraft({
+        campaignId: req.params.id,
+        actorId: req.user.userId,
+        fields: req.body || {},
+        expectedVersion: req.body?.base_version ?? req.body?.draft_version,
+      });
+      return res.status(200).json({
+        draft_version: result.draftVersion,
+        draft_saved_at: result.draftSavedAt,
+        material_change: result.materialChange,
+      });
+    } catch (err) {
+      return mapDraftError(err, res);
+    }
+  })
+);
+
+// List retained versions (metadata only) for the editor's history panel.
+router.get(
+  '/:id/draft/versions',
+  requireAuth,
+  requireCampaignMember('owner', 'manager', 'editor', 'viewer'),
+  asyncHandler(async (req, res) => {
+    const versions = await draftVersionService.listVersions({ campaignId: req.params.id });
+    return res.json({ versions });
+  })
+);
+
+// Preview a retained version using the stored snapshot.
+router.get(
+  '/:id/draft/versions/:versionId',
+  requireAuth,
+  requireCampaignMember('owner', 'manager', 'editor', 'viewer'),
+  asyncHandler(async (req, res) => {
+    const version = await draftVersionService.getVersion({
+      campaignId: req.params.id,
+      versionId: req.params.versionId,
+    });
+    if (!version) return res.status(404).json({ error: 'Draft version not found' });
+    return res.json(version);
+  })
+);
+
+// Restore a retained version. Creates a new current version; history is kept.
+router.post(
+  '/:id/draft/versions/:versionId/restore',
+  requireAuth,
+  requireCampaignMember('owner', 'manager', 'editor'),
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await draftVersionService.restoreVersion({
+        campaignId: req.params.id,
+        versionId: req.params.versionId,
+        actorId: req.user.userId,
+        expectedVersion: req.body?.base_version ?? req.body?.draft_version,
+      });
+      return res.json({
+        draft_version: result.draftVersion,
+        restored_from: result.restoredFrom,
+        material_change: result.materialChange,
+      });
+    } catch (err) {
+      return mapDraftError(err, res);
+    }
   })
 );
 
