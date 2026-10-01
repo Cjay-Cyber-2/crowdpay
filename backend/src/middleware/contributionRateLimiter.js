@@ -5,11 +5,40 @@ const IP_LIMIT = 10;
 const WALLET_LIMIT = 5;
 const WINDOW_SECONDS = 60;
 
+/**
+ * Returns a list of wallet public keys that bypass rate limiting.
+ * Configured via the RATE_LIMIT_BYPASS_ACCOUNTS environment variable
+ * (comma-separated list).
+ *
+ * ⚠️ SECURITY WARNING: Adding accounts to this list allows them to make
+ * unlimited contribution requests. Only use for automated test accounts
+ * in non-production environments. Never add real user accounts in production.
+ */
 function getTestAccountBypasses() {
   const raw = process.env.RATE_LIMIT_BYPASS_ACCOUNTS || '';
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 
+/**
+ * Rate limiter for contribution endpoints.
+ *
+ * Limits:
+ * - 10 requests per minute per IP
+ * - 5 requests per minute per wallet public key
+ *
+ * Fail-open behavior:
+ * If Redis is unavailable or any other error occurs, the middleware calls
+ * next() without blocking the request. This ensures contributions are never
+ * blocked by infrastructure issues. A warning is logged with the error details
+ * so operators can observe and alert on Redis outages.
+ *
+ * Bypass:
+ * Wallet public keys listed in RATE_LIMIT_BYPASS_ACCOUNTS are exempt from
+ * rate limiting entirely. This is intended for automated test accounts only.
+ */
 async function contributionRateLimiter(req, res, next) {
   try {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -23,7 +52,9 @@ async function contributionRateLimiter(req, res, next) {
     const now = Date.now();
     const windowKeySuffix = Math.floor(now / (WINDOW_SECONDS * 1000));
     const ipKey = `rl:contrib:ip:${ip}:${windowKeySuffix}`;
-    const walletKey = walletPublicKey ? `rl:contrib:wallet:${walletPublicKey}:${windowKeySuffix}` : null;
+    const walletKey = walletPublicKey
+      ? `rl:contrib:wallet:${walletPublicKey}:${windowKeySuffix}`
+      : null;
 
     const pipeline = redis.pipeline();
     pipeline.incr(ipKey);
@@ -67,6 +98,7 @@ async function contributionRateLimiter(req, res, next) {
   } catch (err) {
     logger.error('Error in contributionRateLimiter middleware', { error: err.message });
     // Fail open if Redis is down to prevent taking down contributions
+    // A warning is logged so operators can observe and alert on Redis outages
     next();
   }
 }

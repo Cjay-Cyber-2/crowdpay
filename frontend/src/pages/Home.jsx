@@ -5,6 +5,11 @@ import { api } from '../services/api';
 import CampaignCard from '../components/CampaignCard';
 import CampaignCardSkeleton from '../components/skeletons/CampaignCardSkeleton';
 import { useAuth } from '../context/AuthContext';
+import {
+  CategoryFollowToggle,
+  FOLLOWABLE_CATEGORIES,
+  useCategoryFollows,
+} from '../components/CategoryFollows';
 import OnboardingCallout from '../components/OnboardingCallout';
 import {
   isContributorOnboardingVisible,
@@ -50,6 +55,11 @@ export default function Home() {
   const [recentlyViewed, setRecentlyViewed] = useState([]);
   const [recommended, setRecommended] = useState([]);
   const [requestVersion, setRequestVersion] = useState(0);
+  const {
+    followed: followedCategories,
+    pending: followPending,
+    toggle: toggleCategoryFollow,
+  } = useCategoryFollows();
 
   const search = searchParams.get('search') || '';
   const status = searchParams.get('status') || '';
@@ -76,7 +86,6 @@ export default function Home() {
     setSort(newSort);
     setFilters({ sort: newSort });
   };
-
 
   const hasActiveFilters =
     Boolean(search.trim()) ||
@@ -118,7 +127,9 @@ export default function Home() {
           .getRecommendedCampaigns({ limit: 6 })
           .then((data) => {
             const viewedIdSet = new Set(viewedIds);
-            setRecommended((Array.isArray(data) ? data : []).filter((c) => !viewedIdSet.has(c.id)).slice(0, 6));
+            setRecommended(
+              (Array.isArray(data) ? data : []).filter((c) => !viewedIdSet.has(c.id)).slice(0, 6)
+            );
           })
           .catch(() => {});
         return;
@@ -183,7 +194,20 @@ export default function Home() {
       })
       .catch(() => setListError(t('home.loadError')))
       .finally(() => setLoading(false));
-  }, [search, status, asset, category, minProgress, minFunding, maxFunding, deadlineWithin, creatorVerified, country, sort, requestVersion]);
+  }, [
+    search,
+    status,
+    asset,
+    category,
+    minProgress,
+    minFunding,
+    maxFunding,
+    deadlineWithin,
+    creatorVerified,
+    country,
+    sort,
+    requestVersion,
+  ]);
 
   async function loadMore() {
     if (loadingMore || !hasMore || paginationRequestRef.current) return;
@@ -286,7 +310,16 @@ export default function Home() {
         {user ? (
           <div className="hero-actions">
             {(user.role === 'creator' || user.role === 'admin') && (
-              <Link to="/campaigns/new" className="btn-primary" style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%', textAlign: 'center' }}>
+              <Link
+                to="/campaigns/new"
+                className="btn-primary"
+                style={{
+                  fontSize: '1rem',
+                  padding: '0.75rem 1.5rem',
+                  width: '100%',
+                  textAlign: 'center',
+                }}
+              >
                 {t('home.startCampaign')}
               </Link>
             )}
@@ -294,10 +327,30 @@ export default function Home() {
           </div>
         ) : (
           <div className="hero-actions hero-actions--row-sm">
-            <Link to="/register" className="btn-primary" style={{ flex: '1 1 140px', minWidth: '140px', fontSize: '1rem', padding: '0.75rem 1.5rem', textAlign: 'center' }}>
+            <Link
+              to="/register"
+              className="btn-primary"
+              style={{
+                flex: '1 1 140px',
+                minWidth: '140px',
+                fontSize: '1rem',
+                padding: '0.75rem 1.5rem',
+                textAlign: 'center',
+              }}
+            >
               {t('home.createAccount')}
             </Link>
-            <Link to="/login" className="btn-secondary" style={{ flex: '1 1 140px', minWidth: '140px', fontSize: '1rem', padding: '0.75rem 1.5rem', textAlign: 'center' }}>
+            <Link
+              to="/login"
+              className="btn-secondary"
+              style={{
+                flex: '1 1 140px',
+                minWidth: '140px',
+                fontSize: '1rem',
+                padding: '0.75rem 1.5rem',
+                textAlign: 'center',
+              }}
+            >
               {t('login.title')}
             </Link>
           </div>
@@ -471,7 +524,14 @@ export default function Home() {
             </select>
           </label>
         )}
-        <label style={{ ...styles.filterItem, flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
+        <label
+          style={{
+            ...styles.filterItem,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: '0.4rem',
+          }}
+        >
           <input
             type="checkbox"
             checked={creatorVerified === 'true'}
@@ -497,7 +557,16 @@ export default function Home() {
         </label>
       </div>
 
-      {(search || status || asset || category || minProgress || minFunding || maxFunding || deadlineWithin || creatorVerified || country) && (
+      {(search ||
+        status ||
+        asset ||
+        category ||
+        minProgress ||
+        minFunding ||
+        maxFunding ||
+        deadlineWithin ||
+        creatorVerified ||
+        country) && (
         <div style={styles.activeFilters}>
           {search && (
             <button className="filter-chip" onClick={() => setFilters({ search: '' })}>
@@ -553,6 +622,13 @@ export default function Home() {
       )}
 
       <h2 style={styles.sectionTitle}>{t('home.activeCampaigns')}</h2>
+      {user && (
+        <p
+          style={{ color: 'var(--color-text-hint)', fontSize: '0.85rem', marginBottom: '0.75rem' }}
+        >
+          Follow a category to receive new campaigns in your weekly digest.
+        </p>
+      )}
       <div style={styles.sortBar}>
         <button
           type="button"
@@ -562,14 +638,26 @@ export default function Home() {
           {t('home.allCategories')}
         </button>
         {categoryCounts.map((cat) => (
-          <button
+          <span
             key={cat.category}
-            type="button"
-            className={category === cat.category ? 'pill-active' : 'pill'}
-            onClick={() => setFilters({ category: cat.category })}
+            style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}
           >
-            {t(`home.categories.${cat.category}`, { defaultValue: cat.category })} ({cat.count})
-          </button>
+            <button
+              type="button"
+              className={category === cat.category ? 'pill-active' : 'pill'}
+              onClick={() => setFilters({ category: cat.category })}
+            >
+              {t(`home.categories.${cat.category}`, { defaultValue: cat.category })} ({cat.count})
+            </button>
+            {user && FOLLOWABLE_CATEGORIES.includes(cat.category) && (
+              <CategoryFollowToggle
+                category={cat.category}
+                following={followedCategories.has(cat.category)}
+                disabled={followPending.has(cat.category)}
+                onToggle={toggleCategoryFollow}
+              />
+            )}
+          </span>
         ))}
       </div>
 
@@ -594,12 +682,18 @@ export default function Home() {
         </div>
       ) : listError ? (
         <div className="load-state load-state--error" role="alert">
-          <span className="load-state__icon" aria-hidden="true">!</span>
+          <span className="load-state__icon" aria-hidden="true">
+            !
+          </span>
           <div>
             <strong>{t('home.loadErrorTitle')}</strong>
             <p>{listError}</p>
           </div>
-          <button type="button" className="btn-secondary" onClick={() => setRequestVersion((value) => value + 1)}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setRequestVersion((value) => value + 1)}
+          >
             {t('home.tryAgain')}
           </button>
         </div>
@@ -649,7 +743,11 @@ export default function Home() {
             ))}
           </div>
           {loadingMore && (
-            <div aria-busy="true" aria-live="polite" style={{ ...styles.grid, marginTop: '1.25rem' }}>
+            <div
+              aria-busy="true"
+              aria-live="polite"
+              style={{ ...styles.grid, marginTop: '1.25rem' }}
+            >
               {Array.from({ length: 4 }, (_, i) => (
                 <CampaignCardSkeleton key={`pagination-skeleton-${i}`} />
               ))}

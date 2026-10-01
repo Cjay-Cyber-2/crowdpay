@@ -35,13 +35,14 @@ Backend  ───────────────────────�
   ┌────────────────────────────────────────────────────────────────┐
   │ routes: campaigns · contributions · withdrawals · milestones   │
   │         disputes · users · wallets · notifications · webhooks  │
-  │         anchor · admin · api-keys                              │
+  │         anchor · admin · api-keys · comm-prefs · surveys       │
   └────────────────────────────────────────────────────────────────┘
   ┌────────────────────────────────────────────────────────────────┐
   │ services: stellarService · sorobanService · anchorService      │
   │           ledgerMonitor · reconciliation · contributionService │
   │           emailService · kycProvider · webhookDispatcher       │
   │           walletSecrets · campaignStatusService                │
+  │           communicationPreferenceService · outcomeSurveyService│
   └────────────────────────────────────────────────────────────────┘
           │                    │                      │
           ▼                    ▼                      ▼
@@ -53,6 +54,20 @@ Backend  ───────────────────────�
 ```
 
 ---
+
+## Database Migrations
+
+CrowdPay uses a strict SQL migration runner located in `backend/db/`. All migration files must be `.sql` files in `backend/db/migrations/`.
+
+- Run migrations: `npm run migrate`
+- Verify the complete schema: `npm run verify-schema`
+- Check migration status: `npm run migrate:status` (lists all migrations, including unsupported formats with explicit states)
+- Bootstrap schema and run migrations: `npm run migrate:fresh`
+
+To add a migration, create the next timestamped `.sql` file in
+`backend/db/migrations/`, include a reversible `.down.sql` when rollback is
+supported, and run `npm run migrate` followed by `npm run verify-schema` against
+a scratch database before committing it.
 
 ## Project Structure
 
@@ -113,7 +128,7 @@ npm run migrate
 
 cd ../frontend && npm install
 # Optional: copy frontend defaults before overriding API, Stellar, Firebase, or Sentry settings
-cp .env.example .env
+lp .env.example .env
 
 # Two terminals:
 cd backend  && npm run dev   # http://localhost:3001
@@ -133,7 +148,7 @@ cd frontend && npm run dev   # http://localhost:5173
 | `WALLET_ENCRYPTION_KEY` | Base64 or hex-encoded 32-byte encryption key used by backend wallet recovery |
 | `WALLET_SECRET_LOCAL_KEK` | Base64-encoded 32-byte key-encryption key for stored secrets |
 | `FRONTEND_URL` | Allowed CORS origin (dev: `http://localhost:5173`) |
-| `SMTP_HOST` / `EMAIL_SERVICE_API_KEY` | Email delivery (optional in dev) |
+| `SMTP_HOST` / `EMAIL_SERVICE_API_KEY` | Email delivery. **Required in production** — boot fails without one of them unless `DISABLE_EMAILS=true` is set as an explicit opt-out (which logs a warning). Optional in dev. `/health` reports `email: "ready" \| "unconfigured"`. |
 | `PERSONA_API_KEY` / `PERSONA_TEMPLATE_ID` | KYC provider (optional in dev) |
 | `AWS_ACCESS_KEY_ID` + S3 vars | Image uploads (optional in dev) |
 | `FEATURE_FLAG_PROVIDER` | Feature flag backend: `env` (default), `unleash`, or `launchdarkly` |
@@ -142,6 +157,7 @@ cd frontend && npm run dev   # http://localhost:5173
 | `UNLEASH_APP_NAME` | Unleash application name (default: `crowdpay`) |
 | `UNLEASH_ENVIRONMENT` | Unleash environment (default: `development`) |
 | `LAUNCHDARKLY_SDK_KEY` | LaunchDarkly SDK key (required for LaunchDarkly adapter) |
+| `RATE_LIMIT_BYPASS_ACCOUNTS` | Comma-separated Stellar addresses (G...) that bypass the contribution rate limiter. **Only for test accounts in non-production.** Adding accounts here allows unlimited contribution requests — a security risk if misused. |
 
 The frontend runs locally without an `.env`: Vite proxies `/api` to `http://localhost:3001` and Stellar explorer links default to testnet. Use `frontend/.env.example` when you need to override those defaults or configure optional integrations.
 
@@ -167,6 +183,62 @@ Fund it on testnet:
 curl "https://friendbot.stellar.org?addr=<PLATFORM_PUBLIC_KEY>"
 ```
 
+### Wallet secret rotation (destructive operation)
+
+```bash
+# Dry run - simulate without making changes
+npm run rotate-wallet-secrets:dry-run --prefix backend
+
+# Confirm and execute rotation (requires explicit --confirm flag)
+npm run rotate-wallet-secrets:confirm --prefix backend
+```
+
+---
+
+## Available Scripts
+
+### Root (repo level)
+| Script | Description |
+|---|---|
+| `npm test` | Run all backend and frontend tests |
+| `npm run lint` | Lint both backend and frontend |
+| `npm run format` | Format frontend code with Prettier |
+| `npm run format:check` | Check formatting without writing (both packages) |
+| `npm run test:e2e` | Run all Playwright E2E tests |
+| `npm run test:public` | Run public Playwright E2E tests |
+| `npm run load-test` | Run k6 load tests |
+
+### Backend
+| Script | Description |
+|---|---|
+| `npm run dev` | Start development server with hot reload |
+| `npm start` | Start production server |
+| `npm run lint` | Lint backend code |
+| `npm run lint:fix` | Lint and auto-fix backend code |
+| `npm run format:check` | Check backend formatting with Prettier |
+| `npm test` | Run backend tests (requires test-env.sh sourced) |
+| `npm run migrate` | Run pending database migrations |
+| `npm run verify-schema` | Verify every application table and compare a bootstrap against a saved schema snapshot |
+| `npm run migrate:status` | Show migration status |
+| `npm run migrate:down` | Rollback last migration (no .down.sql files exist yet) |
+| `npm run migrate:fresh` | Reset DB from schema.sql + run migrations + verify convergence |
+| `npm run validate-milestones` | Validate milestone percentage constraints |
+| `npm run deploy-contracts` | Deploy Soroban contracts |
+| `npm run rotate-wallet-secrets:dry-run` | Simulate wallet secret rotation |
+| `npm run rotate-wallet-secrets:confirm` | Execute wallet secret rotation (destructive) |
+
+### Frontend
+| Script | Description |
+|---|---|
+| `npm run dev` | Start Vite dev server |
+| `npm run build` | Build for production |
+| `npm run lint` | Lint frontend code |
+| `npm run lint:fix` | Lint and auto-fix frontend code |
+| `npm run format` | Format with Prettier |
+| `npm run format:check` | Check formatting without writing |
+| `npm run test` | Run Vitest tests |
+| `npm run test:watch` | Run Vitest in watch mode |
+
 ---
 
 ## Production database
@@ -178,8 +250,23 @@ Production Compose intentionally expects an external PostgreSQL service. See the
 ## Testing
 
 ```bash
+# Run all tests (backend + frontend) from repo root
+npm test
+
+# Or run individually
 cd backend  && npm test       # Node test runner + Supertest
 cd frontend && npm test       # Vitest
+
+# E2E tests
+npm run test:e2e              # All E2E tests
+npm run test:public           # Public E2E tests only
+
+# Load tests (requires k6)
+npm run load-test             # Run all k6 load tests
+
+# Backend test environment variables are in test-env.sh
+# Source it before running backend tests:
+source test-env.sh && cd backend && npm test
 ```
 
 ---
@@ -196,7 +283,11 @@ cd frontend && npm test       # Vitest
 
 **Campaign status cron**: `campaignStatusService.js` runs hourly (via `node-cron` in `backend/src/index.js`) to transition active campaigns to `funded` or `failed` when goals or deadlines are met. Set `ENABLE_CAMPAIGN_STATUS_CRON=false` to disable the in-process scheduler (e.g. when using an external cron that calls `POST /api/campaigns/cron/fail-expired` instead). On each transition, `campaignStatusActions.js` sends emails, fires webhooks, creates in-app notifications, logs the change in `campaign_status_events`, and queues contributor refunds for failed campaigns.
 
-**Weekly digest cron**: `weeklyDigestService.js` runs Sunday evenings by default (`0 18 * * 0`) and sends grouped contributor digests for campaign updates, milestone releases, funded/failed transitions, and upcoming deadlines. Set `ENABLE_WEEKLY_DIGEST_CRON=false` to disable it, or override the schedule with `WEEKLY_DIGEST_CRON`.
+**Weekly digest cron**: `weeklyDigestService.js` runs Sunday evenings by default (`0 18 * * 0`) and sends grouped contributor digests for campaign updates, milestone releases, funded/failed transitions, and upcoming deadlines. Users can also **follow campaign categories** (`POST /api/users/me/category-follows`) to include up to 5 new campaigns per followed category (max 20) under a `New in <category>` heading; the `category_digest` notification preference opts out. See [Category follows & digest](docs/category-digests.md). Set `ENABLE_WEEKLY_DIGEST_CRON=false` to disable it, or override the schedule with `WEEKLY_DIGEST_CRON`.
+
+**Per-campaign communication preferences**: `notification_preferences` mutes a category across *every* campaign at once. `campaign_communication_preferences` (#961) is the middle layer — a contributor can mute `updates`, `milestones`, `funding_updates`, `messages`, or `surveys` for one campaign and keep receiving everything on the others. Every channel defaults to on and an absent row means "no override", so nothing changes for existing accounts. The preference is applied at the point of contact (update dispatch, follower fan-out, survey invites) rather than at the point of configuration, and the update path **fails open**: a lookup error logs and notifies everybody rather than silently muting the campaign. See [docs/contributor-communication-preferences.md](docs/contributor-communication-preferences.md).
+
+**Outcome surveys**: after a campaign finishes funding, its creator can ask the people who backed it what actually happened. A beneficiary is any contributor to *that* campaign (derived from the contribution ledger, not from follow rows or role), one response per backer is enforced by a `UNIQUE (survey_id, user_id)` constraint, and the lifecycle `draft → open → closed` is a closed state machine built from compare-and-set updates so concurrent open/close/respond calls resolve to a deterministic `409` rather than double-notifying. Individual answers are never exposed: the public read returns the aggregate count and your own response, and the results endpoint selects answer bags without `user_id`. See [docs/outcome-surveys.md](docs/outcome-surveys.md).
 
 ---
 
@@ -209,7 +300,7 @@ Feature flags use pluggable adapters. In addition to the default `env` adapter, 
 ## Part of Savitura
 
 - **[Fluxa](https://github.com/Savitura/Fluxa)** — the payment infrastructure layer
-- **[SaviTools](https://github.com/Savitura/Savitools)** — developer tools for Stellar builders
+- **[SaviTools](https://github.com/Savitura/SaviTools)** — developer tools for Stellar builders
 
 ---
 
@@ -273,3 +364,8 @@ Flags are fetched once on app load and cached. Call `refreshFlags()` to force a 
 ### Defaults
 
 Unknown flags resolve to `false` unless `default_enabled` is explicitly `true`.
+CrowdPay provides a decentralized payment processing platform designed to facilitate peer-to-peer transactions seamlessly.
+​Built on high-throughput blockchain networks to ensure instant settlement times and minimal gas fees.
+​Features robust multi-signature smart contracts to secure escrowed funds during campaign operations.
+​Implements seamless fiat-to-crypto gateway integrations for frictionless onboarding.
+​Provides intuitive dashboard analytics to track contribution metrics and real-time funding goals.

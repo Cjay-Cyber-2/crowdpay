@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // Provide a simple in‑memory localStorage mock for test environment
 if (typeof global.localStorage === 'undefined') {
@@ -26,6 +26,25 @@ if (typeof window !== 'undefined' && typeof window.localStorage === 'undefined')
 import en from '../locales/en.json';
 import fr from '../locales/fr.json';
 import i18nInstance from 'i18next';
+
+function getAllKeys(obj, prefix = '') {
+  return Object.keys(obj).reduce((res, key) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+      return [...res, ...getAllKeys(obj[key], path)];
+    }
+    return [...res, path];
+  }, []);
+}
+
+describe('i18n key parity check', () => {
+  it('ensures fr.json defines every key present in en.json', () => {
+    const enKeys = getAllKeys(en);
+    const frKeys = new Set(getAllKeys(fr));
+    const missing = enKeys.filter((key) => !frKeys.has(key));
+    expect(missing, `Missing translation keys in fr.json: ${missing.join(', ')}`).toEqual([]);
+  });
+});
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class {
