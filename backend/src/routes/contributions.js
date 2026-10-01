@@ -118,22 +118,12 @@ router.post(
     }
 
     // Cross-asset contributions may arrive with a single-use preview token from
-    // POST /api/campaigns/:id/contribution/preview. When present it is
-    // validated + redeemed and the exact approved route is used; callers
-    // without one fall back to quoting the best route inline (#688).
+    // POST /api/campaigns/:id/contribution/preview. The token is redeemed exactly
+    // once, inside the contribution transaction below (#900): redeeming it here
+    // as well destroyed it before the transaction ran, so every quoted
+    // cross-asset contribution failed with PREVIEW_EXPIRED and the approved
+    // route was never applied.
     let previewPath = null;
-    if (sendAsset !== campaign.asset_type && preview_token) {
-      previewPath = await pathPaymentPreviewService.consumeContributionPreview({
-        previewToken: preview_token,
-        campaignId: campaign_id,
-        sendAsset,
-        amount,
-        selectedPathIndex:
-          typeof selected_path_index === 'number'
-            ? selected_path_index
-            : Number(selected_path_index),
-      });
-    }
 
     const client = await db.connect();
     let result;
@@ -147,10 +137,11 @@ router.post(
         if (!invOk) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'REWARD_TIER_SOLD_OUT' }); }
       }
 
-      // Cross-asset contributions may arrive with a single-use preview token from
-      // POST /api/campaigns/:id/contribution/preview. When present it is
-      // validated + redeemed and the exact approved route is used; callers
-      // without one fall back to quoting the best route inline (#688).
+      // Redeem the single-use preview token exactly once, inside the
+      // transaction, and thread the approved route into submission so the
+      // max_send_amount the contributor agreed to is actually enforced (#900).
+      // Callers without a token fall back to quoting the best route inline in
+      // buildContributionIntent (#688).
       if (sendAsset !== campaign.asset_type && preview_token) {
         previewPath = await pathPaymentPreviewService.consumeContributionPreview({
           previewToken: preview_token,
@@ -178,6 +169,7 @@ router.post(
         referralLinkCode: referralLink?.code,
         referralLinkId: referralLink?.id,
         tierId: tier_id,
+        previewPath,
         idempotencyKey: idempotency_key,
         client,
       });

@@ -25,6 +25,11 @@ const { resolveCampaignLanguage } = require('../utils/campaignLocale');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
 const {
+  PUBLIC_CAMPAIGN_SELECT,
+  publicCampaignColumnList,
+  stripInternalCampaignFields,
+} = require('../lib/publicCampaignColumns');
+const {
   watchCampaignWallet,
   addSSEClient,
   removeSSEClient,
@@ -503,7 +508,7 @@ router.get(
     const orderBy = sortExpressions[effectiveSort] || sortExpressions.newest;
 
     const query = `
-    SELECT c.*,
+    SELECT ${PUBLIC_CAMPAIGN_SELECT},
            u.name AS creator_name,
            u.kyc_status AS creator_kyc_status,
            u.verification_status AS creator_verification_status,
@@ -537,7 +542,14 @@ router.get(
   `;
     const result = await db.query(query, [...params, limit, offset]);
 
-    res.json({ total, limit, offset, campaigns: result.rows });
+    // The listing endpoint is public: strip any internal column a widened query
+    // might have selected (fraud_*, content_fingerprint, wallet_secret_encrypted).
+    res.json({
+      total,
+      limit,
+      offset,
+      campaigns: result.rows.map(stripInternalCampaignFields),
+    });
   })
 );
 
@@ -1434,7 +1446,7 @@ router.get(
     }
 
     const query = `
-    SELECT c.*,
+    SELECT ${PUBLIC_CAMPAIGN_SELECT},
            (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count,
            u.kyc_status AS creator_kyc_status,
            u.verification_status AS creator_verification_status,
@@ -1519,8 +1531,10 @@ router.get(
       return res.status(404).json({ error: 'Campaign not found' });
     }
 
-    // Add notice if campaign is suspended
-    const response = { ...campaign, user_role: userRole };
+    // Add notice if campaign is suspended. `stripInternalCampaignFields` keeps
+    // the public detail payload free of fraud/duplicate internals and the
+    // encrypted wallet key even though the row is fetched with a wide allowlist.
+    const response = { ...stripInternalCampaignFields(campaign), user_role: userRole };
     if (campaign.status === 'suspended') {
       response.suspended_notice =
         'This campaign has been suspended and cannot receive new contributions';
@@ -2281,7 +2295,7 @@ router.post(
           contract_deployment_status, contract_deployment_error, last_deployment_attempt_at, template_id, category, country,
           status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-       RETURNING *`,
+       RETURNING ${publicCampaignColumnList('')}`,
         [
           title,
           description,
@@ -2382,7 +2396,9 @@ router.post(
 
     watchCampaignWallet(campaign.id, walletPublicKey);
 
-    res.status(201).json(campaign);
+    // The creation response is the campaign row the creator just wrote: never
+    // echo internal columns (content_fingerprint, fraud_*, wallet key) back.
+    res.status(201).json(stripInternalCampaignFields(campaign));
   })
 );
 
@@ -2615,7 +2631,7 @@ router.patch(
     UPDATE campaigns
     SET ${setClause}
     WHERE id = $${paramIndex} AND status = $${statusParamIndex}
-    RETURNING *
+    RETURNING ${publicCampaignColumnList('')}
   `;
 
     const updatedRows = await withTransaction(async client => {
@@ -2648,7 +2664,9 @@ router.patch(
     cache.invalidate(`campaigns:id:${campaignId}`);
     cache.invalidatePrefix('campaigns:list:');
 
-    res.json(updatedRows[0]);
+    // Enumerate the public columns instead of returning the raw row so editing
+    // a campaign can never hand the creator the fraud/duplicate internals.
+    res.json(stripInternalCampaignFields(updatedRows[0]));
   })
 );
 
