@@ -3,7 +3,10 @@ const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../config/logger');
-const { sendCampaignUpdateNotifications } = require('../services/campaignUpdatesPublishing');
+const {
+  renderUpdate,
+  sendCampaignUpdateNotifications,
+} = require('../services/campaignUpdatesPublishing');
 const { CAMPAIGN_UPDATE_BODY_MAX_LENGTH } = require('../middleware/validation');
 
 function cleanText(value = '') {
@@ -166,6 +169,81 @@ router.post(
     }
 
     res.status(201).json(update);
+  })
+);
+
+// Creator only: preview a composed update before it is saved/published. Uses
+// the same sanitization + formatting path as publication so the preview can
+// never diverge from the final public/notification representation (#945).
+router.post(
+  '/:id/updates/preview',
+  requireAuth,
+  requireCampaignCreator,
+  asyncHandler(async (req, res) => {
+    const title = cleanText(req.body.title);
+    const body = cleanText(req.body.body);
+
+    let attachments = [];
+    try {
+      attachments = JSON.parse(validateAttachments(req.body.attachments));
+    } catch (err) {
+      return res.status(err.statusCode || 422).json({ error: err.message });
+    }
+
+    if (!title) return res.status(422).json({ error: 'Title is required' });
+    if (!body) return res.status(422).json({ error: 'Body is required' });
+    if (body.length > CAMPAIGN_UPDATE_BODY_MAX_LENGTH) {
+      return res.status(422).json({
+        error: `Update body must be ${CAMPAIGN_UPDATE_BODY_MAX_LENGTH} characters or fewer`,
+      });
+    }
+
+    let scheduledFor = null;
+    if (req.body.scheduled_for) {
+      const scheduledDate = new Date(req.body.scheduled_for);
+      if (isNaN(scheduledDate.getTime())) {
+        return res.status(422).json({ error: 'Invalid scheduled_for date format' });
+      }
+      scheduledFor = scheduledDate.toISOString();
+    }
+
+    const preview = renderUpdate({
+      campaignId: req.params.id,
+      campaignTitle: req.campaign.title,
+      update: {
+        title,
+        body,
+        attachments,
+        status: scheduledFor ? 'scheduled' : 'published',
+        scheduled_for: scheduledFor,
+      },
+    });
+
+    return res.json({ preview, scheduled_for_utc: preview.scheduled_for });
+  })
+);
+
+// Creator only: preview a stored update (e.g. a scheduled one before publish).
+router.get(
+  '/:id/updates/:updateId/preview',
+  requireAuth,
+  requireCampaignCreator,
+  asyncHandler(async (req, res) => {
+    const { rows } = await db.query(
+      `SELECT id, campaign_id, author_id, title, body, attachments, status, scheduled_for, created_at, updated_at
+         FROM campaign_updates
+        WHERE id = $1 AND campaign_id = $2`,
+      [req.params.updateId, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Update not found' });
+
+    const preview = renderUpdate({
+      campaignId: req.params.id,
+      campaignTitle: req.campaign.title,
+      update: rows[0],
+    });
+
+    return res.json({ preview, scheduled_for_utc: preview.scheduled_for });
   })
 );
 
