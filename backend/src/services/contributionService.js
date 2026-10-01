@@ -138,6 +138,7 @@ async function submitCustodialContribution({
   intentOverride,
   anchorMetadata,
   displayName,
+  attributionMode,
   gift,
   referralCode,
   referralLinkCode,
@@ -181,6 +182,7 @@ async function submitCustodialContribution({
 
   const metadata = {
     ...intent.flowMetadata,
+    attribution_mode: attributionMode || 'public',
     ...(gift
       ? {
           gift: {
