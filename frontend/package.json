@@ -18,9 +18,9 @@
     "@sentry/react": "^10.55.0",
     "@stellar/freighter-api": "^4.1.0",
     "axios": "^1.7.9",
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.16",
     "easymde": "^2.18.0",
-    "firebase": "^11.0.0",
+    "firebase": "^12.19.0",
     "i18next": "^25.3.2",
     "i18next-browser-languagedetector": "^8.2.0",
     "qrcode": "^1.5.4",
@@ -47,5 +47,8 @@
     "prettier": "^3.8.3",
     "vite": "^6.4.3",
     "vitest": "^3.1.4"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.14.5"
   }
 }

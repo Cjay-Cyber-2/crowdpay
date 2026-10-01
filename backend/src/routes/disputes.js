@@ -217,8 +217,7 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
-})
-);
+});
 
 // GET /campaigns/:id/disputes — admin only
 router.get(
@@ -330,314 +329,322 @@ router.post(
 );
 
 // PATCH /disputes/:id — admin updates status + resolution note
-router.patch('/disputes/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { status, resolution_note } = req.body;
+router.patch(
+  '/disputes/:id',
+  requireAuth,
+  requireRole('admin'),
+  asyncHandler(async (req, res) => {
+    const { status, resolution_note } = req.body;
 
-  const VALID_STATUSES = [
-    'open',
-    'under_review',
-    'resolved_creator',
-    'resolved_contributor',
-    'closed',
-  ];
-  if (!VALID_STATUSES.includes(status)) {
-    return res.status(422).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
-  }
+    const VALID_STATUSES = [
+      'open',
+      'under_review',
+      'resolved_creator',
+      'resolved_contributor',
+      'closed',
+    ];
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(422).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+    }
 
-  const { rows: disputes } = await db.query('SELECT * FROM disputes WHERE id = $1', [
-    req.params.id,
-  ]);
-  if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
-  const dispute = disputes[0];
+    const { rows: disputes } = await db.query('SELECT * FROM disputes WHERE id = $1', [
+      req.params.id,
+    ]);
+    if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
+    const dispute = disputes[0];
 
-  const { rows: disputeCampaigns } = await db.query(
-    `SELECT c.id, c.creator_id, c.wallet_public_key, c.escrow_contract_id, c.raised_amount, c.title, c.status AS campaign_status,
+    const { rows: disputeCampaigns } = await db.query(
+      `SELECT c.id, c.creator_id, c.wallet_public_key, c.escrow_contract_id, c.raised_amount, c.title, c.status AS campaign_status,
             u.wallet_public_key AS creator_wallet_public_key
      FROM campaigns c
      JOIN users u ON u.id = c.creator_id
      WHERE c.id = $1`,
-    [dispute.campaign_id]
-  );
-  if (!disputeCampaigns.length) {
-    return res.status(404).json({ error: 'Campaign not found' });
-  }
-  const campaign = disputeCampaigns[0];
-  const campaignCreatorId = campaign.creator_id;
+      [dispute.campaign_id]
+    );
+    if (!disputeCampaigns.length) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    const campaign = disputeCampaigns[0];
+    const campaignCreatorId = campaign.creator_id;
 
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
 
-    const resolvedAt = ['resolved_creator', 'resolved_contributor', 'closed'].includes(status)
-      ? 'NOW()'
-      : 'NULL';
+      const resolvedAt = ['resolved_creator', 'resolved_contributor', 'closed'].includes(status)
+        ? 'NOW()'
+        : 'NULL';
 
-    const { rows: updated } = await client.query(
-      `UPDATE disputes
+      const { rows: updated } = await client.query(
+        `UPDATE disputes
        SET status = $1, resolution_note = $2, resolved_at = ${resolvedAt}
        WHERE id = $3
        RETURNING *`,
-      [status, resolution_note || null, dispute.id]
-    );
-
-    await logDisputeEvent(client, {
-      disputeId: dispute.id,
-      actorId: req.user.userId,
-      action: `status_changed_to_${status}`,
-      note: resolution_note || null,
-    });
-
-    if (status === 'resolved_contributor') {
-      // Trigger refund for the disputing contributor
-      const { rows: campaigns } = await client.query(
-        'SELECT wallet_public_key FROM campaigns WHERE id = $1',
-        [dispute.campaign_id]
+        [status, resolution_note || null, dispute.id]
       );
-      const { rows: contributorRows } = await client.query(
-        'SELECT wallet_public_key FROM users WHERE id = $1',
-        [dispute.raised_by]
-      );
-      const { rows: contributions } = await client.query(
-        `SELECT id, amount, asset FROM contributions
+
+      await logDisputeEvent(client, {
+        disputeId: dispute.id,
+        actorId: req.user.userId,
+        action: `status_changed_to_${status}`,
+        note: resolution_note || null,
+      });
+
+      if (status === 'resolved_contributor') {
+        // Trigger refund for the disputing contributor
+        const { rows: campaigns } = await client.query(
+          'SELECT wallet_public_key FROM campaigns WHERE id = $1',
+          [dispute.campaign_id]
+        );
+        const { rows: contributorRows } = await client.query(
+          'SELECT wallet_public_key FROM users WHERE id = $1',
+          [dispute.raised_by]
+        );
+        const { rows: contributions } = await client.query(
+          `SELECT id, amount, asset FROM contributions
          WHERE campaign_id = $1 AND sender_public_key = $2
          AND NOT EXISTS (
            SELECT 1 FROM withdrawal_requests wr WHERE wr.contribution_id = contributions.id
          )`,
-        [dispute.campaign_id, contributorRows[0].wallet_public_key]
-      );
+          [dispute.campaign_id, contributorRows[0].wallet_public_key]
+        );
 
-      const { buildWithdrawalTransaction } = require('../services/stellarService');
-      const {
-        insertWithdrawalPendingSignatures,
-      } = require('../services/stellarTransactionService');
+        const { buildWithdrawalTransaction } = require('../services/stellarService');
+        const {
+          insertWithdrawalPendingSignatures,
+        } = require('../services/stellarTransactionService');
 
-      for (const contribution of contributions) {
-        const unsignedXdr = await buildWithdrawalTransaction({
-          campaignWalletPublicKey: campaigns[0].wallet_public_key,
-          destinationPublicKey: contributorRows[0].wallet_public_key,
-          amount: contribution.amount,
-          asset: contribution.asset,
-        });
-        const { rows: refundRows } = await client.query(
-          `INSERT INTO withdrawal_requests
+        for (const contribution of contributions) {
+          const unsignedXdr = await buildWithdrawalTransaction({
+            campaignWalletPublicKey: campaigns[0].wallet_public_key,
+            destinationPublicKey: contributorRows[0].wallet_public_key,
+            amount: contribution.amount,
+            asset: contribution.asset,
+          });
+          const { rows: refundRows } = await client.query(
+            `INSERT INTO withdrawal_requests
              (campaign_id, requested_by, amount, destination_key, unsigned_xdr,
               creator_signed, platform_signed, contribution_id, is_refund, dispute_id)
            VALUES ($1, $2, $3, $4, $5, FALSE, FALSE, $6, TRUE, $7)
            RETURNING id`,
-          [
-            dispute.campaign_id,
-            req.user.userId,
-            contribution.amount,
-            contributorRows[0].wallet_public_key,
+            [
+              dispute.campaign_id,
+              req.user.userId,
+              contribution.amount,
+              contributorRows[0].wallet_public_key,
+              unsignedXdr,
+              contribution.id,
+              dispute.id,
+            ]
+          );
+          await insertWithdrawalPendingSignatures(client, {
+            campaignId: dispute.campaign_id,
+            withdrawalRequestId: refundRows[0].id,
+            userId: req.user.userId,
             unsignedXdr,
-            contribution.id,
-            dispute.id,
-          ]
-        );
-        await insertWithdrawalPendingSignatures(client, {
-          campaignId: dispute.campaign_id,
-          withdrawalRequestId: refundRows[0].id,
-          userId: req.user.userId,
-          unsignedXdr,
-          metadata: { dispute_id: dispute.id, contribution_id: contribution.id },
-        });
-      }
-
-      // Notify contributor
-      const { rows: userRows } = await db.query('SELECT email, name FROM users WHERE id = $1', [
-        dispute.raised_by,
-      ]);
-      const { rows: disputeCampaignRows } = await db.query(
-        'SELECT title FROM campaigns WHERE id = $1',
-        [dispute.campaign_id]
-      );
-      if (userRows.length) {
-        sendDisputeResolvedContributorEmail({
-          to: userRows[0].email,
-          disputeId: dispute.id,
-          outcome: 'resolved in your favor — a refund has been initiated',
-          contributorName: userRows[0].name,
-          campaignTitle: disputeCampaignRows[0]?.title,
-          resolutionNote: resolution_note,
-          campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
-        }).catch(err =>
-          logger.error('Dispute resolved contributor email failed', { error: err.message })
-        );
-      }
-    }
-
-    if (status === 'resolved_creator') {
-      // Unfreeze pending on_hold withdrawals for this campaign
-      const { rows: unfrozen } = await client.query(
-        `UPDATE withdrawal_requests
-         SET status = 'pending', dispute_id = NULL
-         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2
-         RETURNING *`,
-        [dispute.campaign_id, dispute.id]
-      );
-      for (const withdrawal of unfrozen) {
-        setImmediate(() =>
-          emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
-            withdrawal,
-          }).catch(err =>
-            logger.error('Withdrawal updated webhook emit failed', { error: err.message })
-          )
-        );
-      }
-
-      // Release the multisig freeze (remove arbitrator signer, lower thresholds back to 2)
-      // This is required when arbitrator_signer_added is true from the dispute raise
-      let freezeReleaseTxHash = null;
-      if (dispute.arbitrator_signer_added && campaign.wallet_public_key) {
-        try {
-          const result = await stellarService.releaseEscrowFreeze({
-            campaignWalletPublicKey: campaign.wallet_public_key,
-            creatorId: campaign.creator_id,
+            metadata: { dispute_id: dispute.id, contribution_id: contribution.id },
           });
-          freezeReleaseTxHash = result?.hash || null;
-          logger.info('Multisig escrow freeze released', {
-            dispute_id: dispute.id,
-            campaign_id: dispute.campaign_id,
-            tx_hash: freezeReleaseTxHash,
-          });
+        }
 
-          await logDisputeEvent(client, {
+        // Notify contributor
+        const { rows: userRows } = await db.query('SELECT email, name FROM users WHERE id = $1', [
+          dispute.raised_by,
+        ]);
+        const { rows: disputeCampaignRows } = await db.query(
+          'SELECT title FROM campaigns WHERE id = $1',
+          [dispute.campaign_id]
+        );
+        if (userRows.length) {
+          sendDisputeResolvedContributorEmail({
+            to: userRows[0].email,
             disputeId: dispute.id,
-            actorId: req.user.userId,
-            action: 'freeze_released',
-            note: `Multisig freeze released. TX: ${freezeReleaseTxHash || 'N/A'}`,
-          });
-        } catch (freezeErr) {
-          logger.error('Failed to release multisig freeze', {
-            dispute_id: dispute.id,
-            campaign_id: dispute.campaign_id,
-            error: freezeErr.message,
-          });
-          await client.query('ROLLBACK');
-          return res.status(500).json({
-            error: 'Failed to release multisig escrow freeze',
-            detail: freezeErr.message,
-          });
+            outcome: 'resolved in your favor — a refund has been initiated',
+            contributorName: userRows[0].name,
+            campaignTitle: disputeCampaignRows[0]?.title,
+            resolutionNote: resolution_note,
+            campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
+          }).catch(err =>
+            logger.error('Dispute resolved contributor email failed', { error: err.message })
+          );
         }
       }
 
-      // ALSO release Soroban escrow funds if a REAL contract is deployed
-      // (not a mock ID generated when SOROBAN_ENABLED=false)
-      let sorobanReleaseTxHash = null;
-      const {
-        isRealSorobanContract,
-        releaseEscrowToCreator,
-      } = require('../services/sorobanService');
-      if (
-        isRealSorobanContract(campaign.escrow_contract_id) &&
-        campaign.creator_wallet_public_key
-      ) {
-        try {
-          const releaseAmount = Math.floor(parseFloat(campaign.raised_amount || 0) * 10000000);
-          if (releaseAmount > 0) {
-            sorobanReleaseTxHash = await releaseEscrowToCreator({
-              escrowContractId: campaign.escrow_contract_id,
-              creatorAddress: campaign.creator_wallet_public_key,
-              releaseAmount,
+      if (status === 'resolved_creator') {
+        // Unfreeze pending on_hold withdrawals for this campaign
+        const { rows: unfrozen } = await client.query(
+          `UPDATE withdrawal_requests
+         SET status = 'pending', dispute_id = NULL
+         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2
+         RETURNING *`,
+          [dispute.campaign_id, dispute.id]
+        );
+        for (const withdrawal of unfrozen) {
+          setImmediate(() =>
+            emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
+              withdrawal,
+            }).catch(err =>
+              logger.error('Withdrawal updated webhook emit failed', { error: err.message })
+            )
+          );
+        }
+
+        // Release the multisig freeze (remove arbitrator signer, lower thresholds back to 2)
+        // This is required when arbitrator_signer_added is true from the dispute raise
+        let freezeReleaseTxHash = null;
+        if (dispute.arbitrator_signer_added && campaign.wallet_public_key) {
+          try {
+            const result = await stellarService.releaseEscrowFreeze({
+              campaignWalletPublicKey: campaign.wallet_public_key,
+              creatorId: campaign.creator_id,
             });
-            logger.info('Soroban escrow released to creator', {
+            freezeReleaseTxHash = result?.hash || null;
+            logger.info('Multisig escrow freeze released', {
               dispute_id: dispute.id,
               campaign_id: dispute.campaign_id,
-              release_amount: releaseAmount,
-              tx_hash: sorobanReleaseTxHash,
+              tx_hash: freezeReleaseTxHash,
             });
 
             await logDisputeEvent(client, {
               disputeId: dispute.id,
               actorId: req.user.userId,
-              action: 'soroban_escrow_released',
-              note: `Soroban escrow released to creator. TX: ${sorobanReleaseTxHash || 'N/A'}`,
+              action: 'freeze_released',
+              note: `Multisig freeze released. TX: ${freezeReleaseTxHash || 'N/A'}`,
+            });
+          } catch (freezeErr) {
+            logger.error('Failed to release multisig freeze', {
+              dispute_id: dispute.id,
+              campaign_id: dispute.campaign_id,
+              error: freezeErr.message,
+            });
+            await client.query('ROLLBACK');
+            return res.status(500).json({
+              error: 'Failed to release multisig escrow freeze',
+              detail: freezeErr.message,
             });
           }
-        } catch (escrowErr) {
-          logger.error('Failed to release Soroban escrow to creator', {
-            dispute_id: dispute.id,
+        }
+
+        // ALSO release Soroban escrow funds if a REAL contract is deployed
+        // (not a mock ID generated when SOROBAN_ENABLED=false)
+        let sorobanReleaseTxHash = null;
+        const {
+          isRealSorobanContract,
+          releaseEscrowToCreator,
+        } = require('../services/sorobanService');
+        if (
+          isRealSorobanContract(campaign.escrow_contract_id) &&
+          campaign.creator_wallet_public_key
+        ) {
+          try {
+            const releaseAmount = Math.floor(parseFloat(campaign.raised_amount || 0) * 10000000);
+            if (releaseAmount > 0) {
+              sorobanReleaseTxHash = await releaseEscrowToCreator({
+                escrowContractId: campaign.escrow_contract_id,
+                creatorAddress: campaign.creator_wallet_public_key,
+                releaseAmount,
+              });
+              logger.info('Soroban escrow released to creator', {
+                dispute_id: dispute.id,
+                campaign_id: dispute.campaign_id,
+                release_amount: releaseAmount,
+                tx_hash: sorobanReleaseTxHash,
+              });
+
+              await logDisputeEvent(client, {
+                disputeId: dispute.id,
+                actorId: req.user.userId,
+                action: 'soroban_escrow_released',
+                note: `Soroban escrow released to creator. TX: ${sorobanReleaseTxHash || 'N/A'}`,
+              });
+            }
+          } catch (escrowErr) {
+            logger.error('Failed to release Soroban escrow to creator', {
+              dispute_id: dispute.id,
+              campaign_id: dispute.campaign_id,
+              error: escrowErr.message,
+            });
+            await client.query('ROLLBACK');
+            return res.status(500).json({
+              error: 'Failed to release Soroban escrow funds',
+              detail: escrowErr.message,
+            });
+          }
+        }
+
+        // Restore campaign status to pre-dispute state
+        // Look up the previous status from campaign_status_events, default to 'active'
+        if (campaign.campaign_status === 'disputed') {
+          const { rows: statusEvents } = await client.query(
+            `SELECT previous_status FROM campaign_status_events
+           WHERE campaign_id = $1 AND new_status = 'disputed'
+           ORDER BY created_at DESC LIMIT 1`,
+            [dispute.campaign_id]
+          );
+          const restoredStatus = statusEvents[0]?.previous_status || 'active';
+          await client.query(`UPDATE campaigns SET status = $1 WHERE id = $2`, [
+            restoredStatus,
+            dispute.campaign_id,
+          ]);
+          logger.info('Campaign status restored from disputed', {
             campaign_id: dispute.campaign_id,
-            error: escrowErr.message,
+            restored_status: restoredStatus,
           });
-          await client.query('ROLLBACK');
-          return res.status(500).json({
-            error: 'Failed to release Soroban escrow funds',
-            detail: escrowErr.message,
-          });
+        }
+
+        const { rows: creatorRows } = await db.query(
+          `SELECT u.email, u.name, c.title
+         FROM campaigns c JOIN users u ON u.id = c.creator_id
+         WHERE c.id = $1`,
+          [dispute.campaign_id]
+        );
+        const txInfo = [freezeReleaseTxHash, sorobanReleaseTxHash].filter(Boolean).join(', ');
+        if (creatorRows.length) {
+          sendDisputeResolvedCreatorEmail({
+            to: creatorRows[0].email,
+            disputeId: dispute.id,
+            outcome:
+              'resolved in your favor — the dispute is closed' + (txInfo ? ` (TX: ${txInfo})` : ''),
+            creatorName: creatorRows[0].name,
+            campaignTitle: creatorRows[0].title,
+            resolutionNote: resolution_note,
+            campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
+          }).catch(err =>
+            logger.error('Dispute resolved creator email failed', { error: err.message })
+          );
         }
       }
 
-      // Restore campaign status to pre-dispute state
-      // Look up the previous status from campaign_status_events, default to 'active'
-      if (campaign.campaign_status === 'disputed') {
-        const { rows: statusEvents } = await client.query(
-          `SELECT previous_status FROM campaign_status_events
-           WHERE campaign_id = $1 AND new_status = 'disputed'
-           ORDER BY created_at DESC LIMIT 1`,
-          [dispute.campaign_id]
-        );
-        const restoredStatus = statusEvents[0]?.previous_status || 'active';
-        await client.query(`UPDATE campaigns SET status = $1 WHERE id = $2`, [
-          restoredStatus,
-          dispute.campaign_id,
-        ]);
-        logger.info('Campaign status restored from disputed', {
-          campaign_id: dispute.campaign_id,
-          restored_status: restoredStatus,
+      await client.query('COMMIT');
+
+      if (['resolved_creator', 'resolved_contributor', 'closed'].includes(status)) {
+        setImmediate(() => {
+          const payload = { dispute: updated[0], campaign_id: dispute.campaign_id };
+          emitWebhookEventForUser(
+            campaignCreatorId,
+            WEBHOOK_EVENTS.DISPUTE_RESOLVED,
+            payload
+          ).catch(err =>
+            logger.error('Dispute resolved webhook emit failed', { error: err.message })
+          );
+          emitWebhookEventForCampaign(
+            dispute.campaign_id,
+            WEBHOOK_EVENTS.DISPUTE_RESOLVED,
+            payload
+          ).catch(err =>
+            logger.error('Dispute resolved webhook emit failed', { error: err.message })
+          );
         });
       }
 
-      const { rows: creatorRows } = await db.query(
-        `SELECT u.email, u.name, c.title
-         FROM campaigns c JOIN users u ON u.id = c.creator_id
-         WHERE c.id = $1`,
-        [dispute.campaign_id]
-      );
-      const txInfo = [freezeReleaseTxHash, sorobanReleaseTxHash].filter(Boolean).join(', ');
-      if (creatorRows.length) {
-        sendDisputeResolvedCreatorEmail({
-          to: creatorRows[0].email,
-          disputeId: dispute.id,
-          outcome:
-            'resolved in your favor — the dispute is closed' + (txInfo ? ` (TX: ${txInfo})` : ''),
-          creatorName: creatorRows[0].name,
-          campaignTitle: creatorRows[0].title,
-          resolutionNote: resolution_note,
-          campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
-        }).catch(err =>
-          logger.error('Dispute resolved creator email failed', { error: err.message })
-        );
-      }
+      res.json(updated[0]);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      logger.error('Dispute update failed', { dispute_id: dispute.id, error: err.message });
+      res.status(500).json({ error: 'Could not update dispute' });
+    } finally {
+      client.release();
     }
-
-    await client.query('COMMIT');
-
-    if (['resolved_creator', 'resolved_contributor', 'closed'].includes(status)) {
-      setImmediate(() => {
-        const payload = { dispute: updated[0], campaign_id: dispute.campaign_id };
-        emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch(
-          err => logger.error('Dispute resolved webhook emit failed', { error: err.message })
-        );
-        emitWebhookEventForCampaign(
-          dispute.campaign_id,
-          WEBHOOK_EVENTS.DISPUTE_RESOLVED,
-          payload
-        ).catch(err =>
-          logger.error('Dispute resolved webhook emit failed', { error: err.message })
-        );
-      });
-    }
-
-    res.json(updated[0]);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    logger.error('Dispute update failed', { dispute_id: dispute.id, error: err.message });
-    res.status(500).json({ error: 'Could not update dispute' });
-  } finally {
-    client.release();
-  }
-})
+  })
 );
 
 // POST /admin/disputes/:id/decide — platform arbitrator decides the dispute outcome

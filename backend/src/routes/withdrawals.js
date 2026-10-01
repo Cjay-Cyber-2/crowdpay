@@ -137,345 +137,361 @@ router.get('/capabilities', requireAuth, (req, res) => {
   res.json({ can_approve_platform: canPerformPlatformSignature(req.user.userId) });
 });
 
-router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyncHandler(async (req, res) => {
-  /**
-   * @openapi
-   * /api/withdrawals/request:
-   *   post:
-   *     tags: [Withdrawals]
-   *     summary: Create a pending withdrawal request
-   *     security:
-   *       - bearerAuth: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [campaign_id, destination_key, amount]
-   *             properties:
-   *               campaign_id: { type: string }
-   *               destination_key: { type: string }
-   *               amount: { type: string }
-   *     responses:
-   *       201:
-   *         description: Created
-   *       401:
-   *         description: Unauthorized
-   *       403:
-   *         description: Forbidden
-   *       404:
-   *         description: Campaign not found
-   */
-  const { campaign_id, destination_key, amount, evidence } = req.body;
+router.post(
+  '/request',
+  requireAuth,
+  withdrawalValidation,
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    /**
+     * @openapi
+     * /api/withdrawals/request:
+     *   post:
+     *     tags: [Withdrawals]
+     *     summary: Create a pending withdrawal request
+     *     security:
+     *       - bearerAuth: []
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [campaign_id, destination_key, amount]
+     *             properties:
+     *               campaign_id: { type: string }
+     *               destination_key: { type: string }
+     *               amount: { type: string }
+     *     responses:
+     *       201:
+     *         description: Created
+     *       401:
+     *         description: Unauthorized
+     *       403:
+     *         description: Forbidden
+     *       404:
+     *         description: Campaign not found
+     */
+    const { campaign_id, destination_key, amount, evidence } = req.body;
 
-  if (!evidence || !Array.isArray(evidence) || evidence.length === 0) {
-    return res
-      .status(400)
-      .json({ error: 'Evidence array (receipts, invoices, or links) is required for withdrawals' });
-  }
+    if (!evidence || !Array.isArray(evidence) || evidence.length === 0) {
+      return res
+        .status(400)
+        .json({
+          error: 'Evidence array (receipts, invoices, or links) is required for withdrawals',
+        });
+    }
 
-  const { rows: campaigns } = await db.query(
-    `SELECT id, creator_id, wallet_public_key, asset_type, status,
+    const { rows: campaigns } = await db.query(
+      `SELECT id, creator_id, wallet_public_key, asset_type, status,
             (SELECT COUNT(*)::int FROM milestones m WHERE m.campaign_id = campaigns.id) AS milestone_count
      FROM campaigns WHERE id = $1`,
-    [campaign_id]
-  );
-  if (!campaigns.length) return res.status(404).json({ error: 'Campaign not found' });
-  const campaign = campaigns[0];
+      [campaign_id]
+    );
+    if (!campaigns.length) return res.status(404).json({ error: 'Campaign not found' });
+    const campaign = campaigns[0];
 
-  const isOwner = await checkOwnerAccess(req, campaign_id);
-  if (!isOwner) {
-    return res.status(403).json({ error: 'Only campaign owners can request withdrawals' });
-  }
-  if (campaign.milestone_count > 0) {
-    return res.status(409).json({
-      error:
-        'This campaign uses milestone releases. Funds are released through approved milestones instead of manual withdrawals.',
-    });
-  }
-  if (campaign.status === 'failed') {
-    return res.status(400).json({
-      error:
-        'This campaign has failed. Contributors are eligible for refunds — withdrawals are not permitted.',
-    });
-  }
-  if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(campaign.status)) {
-    return res.status(409).json({
-      error: `Withdrawals cannot be requested while campaign status is "${campaign.status}".`,
-    });
-  }
+    const isOwner = await checkOwnerAccess(req, campaign_id);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only campaign owners can request withdrawals' });
+    }
+    if (campaign.milestone_count > 0) {
+      return res.status(409).json({
+        error:
+          'This campaign uses milestone releases. Funds are released through approved milestones instead of manual withdrawals.',
+      });
+    }
+    if (campaign.status === 'failed') {
+      return res.status(400).json({
+        error:
+          'This campaign has failed. Contributors are eligible for refunds — withdrawals are not permitted.',
+      });
+    }
+    if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(campaign.status)) {
+      return res.status(409).json({
+        error: `Withdrawals cannot be requested while campaign status is "${campaign.status}".`,
+      });
+    }
 
-  // Block withdrawals while a dispute is open or under review
-  const { rows: activeDisputes } = await db.query(
-    `SELECT id FROM disputes
+    // Block withdrawals while a dispute is open or under review
+    const { rows: activeDisputes } = await db.query(
+      `SELECT id FROM disputes
      WHERE campaign_id = $1 AND status IN ('open', 'under_review') LIMIT 1`,
-    [campaign_id]
-  );
-  if (activeDisputes.length) {
-    return res.status(403).json({
-      error: 'Withdrawals are blocked while an active dispute is open for this campaign.',
-      dispute_id: activeDisputes[0].id,
-    });
-  }
+      [campaign_id]
+    );
+    if (activeDisputes.length) {
+      return res.status(403).json({
+        error: 'Withdrawals are blocked while an active dispute is open for this campaign.',
+        dispute_id: activeDisputes[0].id,
+      });
+    }
 
-  const { rows: pending } = await db.query(
-    `SELECT id FROM withdrawal_requests
+    const { rows: pending } = await db.query(
+      `SELECT id FROM withdrawal_requests
      WHERE campaign_id = $1 AND status = 'pending' LIMIT 1`,
-    [campaign_id]
-  );
-  if (pending.length) {
-    return res.status(409).json({
-      error:
-        'A pending withdrawal already exists for this campaign. Cancel it or wait for completion before opening another.',
-    });
-  }
+      [campaign_id]
+    );
+    if (pending.length) {
+      return res.status(409).json({
+        error:
+          'A pending withdrawal already exists for this campaign. Cancel it or wait for completion before opening another.',
+      });
+    }
 
-  const { rows: creatorRows } = await db.query(
-    'SELECT wallet_public_key FROM users WHERE id = $1',
-    [req.user.userId]
-  );
-  const creatorPublicKey = creatorRows[0]?.wallet_public_key || null;
+    const { rows: creatorRows } = await db.query(
+      'SELECT wallet_public_key FROM users WHERE id = $1',
+      [req.user.userId]
+    );
+    const creatorPublicKey = creatorRows[0]?.wallet_public_key || null;
 
-  const multisig = await getAccountMultisigConfig(campaign.wallet_public_key);
-  if (
-    multisig.thresholds.med_threshold < 2 ||
-    !hasSigner(multisig.signers, creatorPublicKey) ||
-    !hasSigner(multisig.signers, getPlatformPublicKey())
-  ) {
-    return res.status(422).json({
-      error: 'Campaign wallet multisig config invalid: creator + platform signatures are required',
-    });
-  }
+    const multisig = await getAccountMultisigConfig(campaign.wallet_public_key);
+    if (
+      multisig.thresholds.med_threshold < 2 ||
+      !hasSigner(multisig.signers, creatorPublicKey) ||
+      !hasSigner(multisig.signers, getPlatformPublicKey())
+    ) {
+      return res.status(422).json({
+        error:
+          'Campaign wallet multisig config invalid: creator + platform signatures are required',
+      });
+    }
 
-  // Calculate collected platform fees for this campaign
-  const { rows: feeRows } = await db.query(
-    `SELECT COALESCE(SUM(platform_fee_amount), 0) as total_fees
+    // Calculate collected platform fees for this campaign
+    const { rows: feeRows } = await db.query(
+      `SELECT COALESCE(SUM(platform_fee_amount), 0) as total_fees
      FROM contributions
      WHERE campaign_id = $1 AND refunded = FALSE`,
-    [campaign_id]
-  );
-  const collectedFees = Number(feeRows?.[0]?.total_fees) || 0;
+      [campaign_id]
+    );
+    const collectedFees = Number(feeRows?.[0]?.total_fees) || 0;
 
-  // Referral commissions are settled out of the campaign balance in the same
-  // transaction as the creator payout (#675).
-  const { commissions, totalCommission } = await calculateCommissions(campaign_id);
-  const payableCommissions = commissions.filter(
-    commission => commission.destination_public_key && parseFloat(commission.commission_owed) > 0
-  );
-  const commissionTotal = payableCommissions.reduce(
-    (sum, commission) => sum + parseFloat(commission.commission_owed),
-    0
-  );
-  const creatorAmount = (parseFloat(amount) - commissionTotal).toFixed(7);
+    // Referral commissions are settled out of the campaign balance in the same
+    // transaction as the creator payout (#675).
+    const { commissions, totalCommission } = await calculateCommissions(campaign_id);
+    const payableCommissions = commissions.filter(
+      commission => commission.destination_public_key && parseFloat(commission.commission_owed) > 0
+    );
+    const commissionTotal = payableCommissions.reduce(
+      (sum, commission) => sum + parseFloat(commission.commission_owed),
+      0
+    );
+    const creatorAmount = (parseFloat(amount) - commissionTotal).toFixed(7);
 
-  if (parseFloat(creatorAmount) <= 0) {
-    return res.status(422).json({
-      error: `Referral commissions of ${totalCommission} ${campaign.asset_type} exceed the requested withdrawal amount. Withdraw a larger amount.`,
-      code: 'COMMISSIONS_EXCEED_WITHDRAWAL',
-      total_commission: totalCommission,
+    if (parseFloat(creatorAmount) <= 0) {
+      return res.status(422).json({
+        error: `Referral commissions of ${totalCommission} ${campaign.asset_type} exceed the requested withdrawal amount. Withdraw a larger amount.`,
+        code: 'COMMISSIONS_EXCEED_WITHDRAWAL',
+        total_commission: totalCommission,
+      });
+    }
+
+    let creatorShare = 0;
+    if (collectedFees > 0 && creatorPublicKey) {
+      creatorShare = await calculateCreatorShare(collectedFees);
+    }
+
+    const xdr = await buildWithdrawalTransaction({
+      campaignWalletPublicKey: campaign.wallet_public_key,
+      destinationPublicKey: destination_key,
+      amount: creatorAmount,
+      asset: campaign.asset_type,
+      collectedFees,
+      creatorPublicKey,
+      commissions: payableCommissions.map(commission => ({
+        destinationPublicKey: commission.destination_public_key,
+        amount: commission.commission_owed,
+      })),
     });
-  }
 
-  let creatorShare = 0;
-  if (collectedFees > 0 && creatorPublicKey) {
-    creatorShare = await calculateCreatorShare(collectedFees);
-  }
-
-  const xdr = await buildWithdrawalTransaction({
-    campaignWalletPublicKey: campaign.wallet_public_key,
-    destinationPublicKey: destination_key,
-    amount: creatorAmount,
-    asset: campaign.asset_type,
-    collectedFees,
-    creatorPublicKey,
-    commissions: payableCommissions.map(commission => ({
-      destinationPublicKey: commission.destination_public_key,
-      amount: commission.commission_owed,
-    })),
-  });
-
-  try {
-    const withdrawal = await withTransaction(async client => {
-      const { rows } = await client.query(
-        `INSERT INTO withdrawal_requests
+    try {
+      const withdrawal = await withTransaction(async client => {
+        const { rows } = await client.query(
+          `INSERT INTO withdrawal_requests
          (campaign_id, requested_by, amount, destination_key, unsigned_xdr, creator_signed, platform_signed, evidence)
        VALUES ($1, $2, $3, $4, $5, FALSE, FALSE, $6)
        RETURNING *`,
-        [campaign_id, req.user.userId, amount, destination_key, xdr, JSON.stringify(evidence)]
-      );
-      await logWithdrawalEvent(client, {
-        withdrawalRequestId: rows[0].id,
-        actorUserId: req.user.userId,
-        action: 'requested',
-        note: null,
-        metadata: {
-          amount,
-          destination_key,
-          asset_type: campaign.asset_type,
-          collected_fees: collectedFees,
-          creator_share: creatorShare,
-        },
+          [campaign_id, req.user.userId, amount, destination_key, xdr, JSON.stringify(evidence)]
+        );
+        await logWithdrawalEvent(client, {
+          withdrawalRequestId: rows[0].id,
+          actorUserId: req.user.userId,
+          action: 'requested',
+          note: null,
+          metadata: {
+            amount,
+            destination_key,
+            asset_type: campaign.asset_type,
+            collected_fees: collectedFees,
+            creator_share: creatorShare,
+          },
+        });
+        await insertWithdrawalPendingSignatures(client, {
+          campaignId: campaign_id,
+          withdrawalRequestId: rows[0].id,
+          userId: req.user.userId,
+          unsignedXdr: xdr,
+          metadata: {
+            amount,
+            destination_key,
+            asset_type: campaign.asset_type,
+            creator_amount: creatorAmount,
+            collected_fees: collectedFees,
+            creator_share: creatorShare,
+            creator_public_key: creatorPublicKey,
+            referral_commissions: payableCommissions.map(commission => ({
+              referral_link_id: commission.referral_link_id,
+              code: commission.code,
+              destination_public_key: commission.destination_public_key,
+              commission_owed: commission.commission_owed,
+            })),
+          },
+        });
+        return rows[0];
+      }, db);
+      res.status(201).json({
+        ...withdrawal,
+        creator_amount: creatorAmount,
+        collected_fees: collectedFees,
+        creator_share: creatorShare,
+        referral_commissions: payableCommissions,
       });
-      await insertWithdrawalPendingSignatures(client, {
-        campaignId: campaign_id,
-        withdrawalRequestId: rows[0].id,
-        userId: req.user.userId,
-        unsignedXdr: xdr,
-        metadata: {
-          amount,
-          destination_key,
-          asset_type: campaign.asset_type,
-          creator_amount: creatorAmount,
-          collected_fees: collectedFees,
-          creator_share: creatorShare,
-          creator_public_key: creatorPublicKey,
-          referral_commissions: payableCommissions.map(commission => ({
-            referral_link_id: commission.referral_link_id,
-            code: commission.code,
-            destination_public_key: commission.destination_public_key,
-            commission_owed: commission.commission_owed,
-          })),
-        },
-      });
-      return rows[0];
-    }, db);
-    res.status(201).json({
-      ...withdrawal,
-      creator_amount: creatorAmount,
-      collected_fees: collectedFees,
-      creator_share: creatorShare,
-      referral_commissions: payableCommissions,
-    });
-  } catch (err) {
-    logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });
-    res.status(500).json({ error: 'Could not create withdrawal request' });
-  }
-});
+    } catch (err) {
+      logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });
+      res.status(500).json({ error: 'Could not create withdrawal request' });
+    }
+  })
+);
 
-router.post('/:id/approve/creator', requireAuth, asyncHandler(async (req, res) => {
-  const { rows: requests } = await db.query(
-    `SELECT wr.*, c.creator_id, c.wallet_public_key AS campaign_wallet_public_key, c.asset_type, c.status AS campaign_status
+router.post(
+  '/:id/approve/creator',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { rows: requests } = await db.query(
+      `SELECT wr.*, c.creator_id, c.wallet_public_key AS campaign_wallet_public_key, c.asset_type, c.status AS campaign_status
      FROM withdrawal_requests wr
      JOIN campaigns c ON c.id = wr.campaign_id
      WHERE wr.id = $1`,
-    [req.params.id]
-  );
-  if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
-  const requestRow = requests[0];
+      [req.params.id]
+    );
+    if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
+    const requestRow = requests[0];
 
-  const isOwner = await checkOwnerAccess(req, requestRow.campaign_id);
-  if (!isOwner) {
-    return res.status(403).json({ error: 'Only campaign owners can approve withdrawals' });
-  }
-  if (
-    !requestRow.is_refund &&
-    !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)
-  ) {
-    return res.status(409).json({
-      error: `Campaign status is "${requestRow.campaign_status}". Creator approval is not allowed.`,
-    });
-  }
-  if (requestRow.status !== 'pending') {
-    return res.status(409).json({ error: 'Withdrawal request is no longer pending' });
-  }
-  if (requestRow.creator_signed) {
-    return res.status(409).json({ error: 'Creator already approved this withdrawal' });
-  }
-
-  const { rows: users } = await db.query(
-    'SELECT wallet_secret_encrypted, wallet_public_key, wallet_type FROM users WHERE id = $1',
-    [req.user.userId]
-  );
-  let signedXdr;
-  const userRow = users[0];
-  try {
-    if (userRow.wallet_type === 'freighter') {
-      // Expect frontend to submit signed_xdr for freighter users
-      const { signed_xdr } = req.body || {};
-      if (!signed_xdr)
-        return res.status(400).json({ error: 'signed_xdr is required for freighter users' });
-
-      // Validate the signed_xdr matches server-generated unsigned_xdr and approved parameters
-      validateSubmittedWithdrawalXdr({
-        signedXdr: signed_xdr,
-        unsignedXdr: requestRow.unsigned_xdr,
-        creatorPublicKey: userRow.wallet_public_key,
-        campaignWalletPublicKey: requestRow.campaign_wallet_public_key,
-        expectedDestination: requestRow.destination_key,
-        expectedAsset: requestRow.asset_type,
-        expectedAmount: requestRow.amount,
-      });
-
-      signedXdr = signed_xdr;
-    } else {
-      signedXdr = await withDecryptedWalletSecret(
-        userRow.wallet_secret_encrypted,
-        {
-          userId: req.user.userId,
-          walletPublicKey: userRow.wallet_public_key,
-        },
-        async creatorSecret =>
-          signTransactionXdr({
-            xdr: requestRow.unsigned_xdr,
-            signerSecret: creatorSecret,
-          })
-      );
+    const isOwner = await checkOwnerAccess(req, requestRow.campaign_id);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only campaign owners can approve withdrawals' });
     }
-  } catch (err) {
-    logger.error('Creator withdrawal signing failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
     if (
-      err.name === 'WithdrawalValidationError' ||
-      err.isValidationError ||
-      err.statusCode === 422 ||
-      err.message?.includes('signed_xdr') ||
-      err.message?.includes('unsigned_xdr') ||
-      err.message?.includes('Signed transaction') ||
-      err.message?.includes('Transaction') ||
-      err.message?.includes('destination') ||
-      err.message?.includes('does not match')
+      !requestRow.is_refund &&
+      !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)
     ) {
-      return res.status(422).json({ error: err.message });
+      return res.status(409).json({
+        error: `Campaign status is "${requestRow.campaign_status}". Creator approval is not allowed.`,
+      });
     }
-    return res.status(503).json({ error: 'Creator wallet signing is unavailable; retry shortly.' });
-  }
+    if (requestRow.status !== 'pending') {
+      return res.status(409).json({ error: 'Withdrawal request is no longer pending' });
+    }
+    if (requestRow.creator_signed) {
+      return res.status(409).json({ error: 'Creator already approved this withdrawal' });
+    }
 
-  try {
-    const updatedWithdrawal = await withTransaction(async client => {
-      const { rows: updated } = await client.query(
-        `UPDATE withdrawal_requests
+    const { rows: users } = await db.query(
+      'SELECT wallet_secret_encrypted, wallet_public_key, wallet_type FROM users WHERE id = $1',
+      [req.user.userId]
+    );
+    let signedXdr;
+    const userRow = users[0];
+    try {
+      if (userRow.wallet_type === 'freighter') {
+        // Expect frontend to submit signed_xdr for freighter users
+        const { signed_xdr } = req.body || {};
+        if (!signed_xdr)
+          return res.status(400).json({ error: 'signed_xdr is required for freighter users' });
+
+        // Validate the signed_xdr matches server-generated unsigned_xdr and approved parameters
+        validateSubmittedWithdrawalXdr({
+          signedXdr: signed_xdr,
+          unsignedXdr: requestRow.unsigned_xdr,
+          creatorPublicKey: userRow.wallet_public_key,
+          campaignWalletPublicKey: requestRow.campaign_wallet_public_key,
+          expectedDestination: requestRow.destination_key,
+          expectedAsset: requestRow.asset_type,
+          expectedAmount: requestRow.amount,
+        });
+
+        signedXdr = signed_xdr;
+      } else {
+        signedXdr = await withDecryptedWalletSecret(
+          userRow.wallet_secret_encrypted,
+          {
+            userId: req.user.userId,
+            walletPublicKey: userRow.wallet_public_key,
+          },
+          async creatorSecret =>
+            signTransactionXdr({
+              xdr: requestRow.unsigned_xdr,
+              signerSecret: creatorSecret,
+            })
+        );
+      }
+    } catch (err) {
+      logger.error('Creator withdrawal signing failed', {
+        withdrawal_id: req.params.id,
+        error: err.message,
+      });
+      if (
+        err.name === 'WithdrawalValidationError' ||
+        err.isValidationError ||
+        err.statusCode === 422 ||
+        err.message?.includes('signed_xdr') ||
+        err.message?.includes('unsigned_xdr') ||
+        err.message?.includes('Signed transaction') ||
+        err.message?.includes('Transaction') ||
+        err.message?.includes('destination') ||
+        err.message?.includes('does not match')
+      ) {
+        return res.status(422).json({ error: err.message });
+      }
+      return res
+        .status(503)
+        .json({ error: 'Creator wallet signing is unavailable; retry shortly.' });
+    }
+
+    try {
+      const updatedWithdrawal = await withTransaction(async client => {
+        const { rows: updated } = await client.query(
+          `UPDATE withdrawal_requests
        SET unsigned_xdr = $1, creator_signed = TRUE
        WHERE id = $2 AND status = 'pending' AND creator_signed = FALSE
        RETURNING *`,
-        [signedXdr, req.params.id]
-      );
-      if (!updated.length) {
-        return null;
+          [signedXdr, req.params.id]
+        );
+        if (!updated.length) {
+          return null;
+        }
+        await logWithdrawalEvent(client, {
+          withdrawalRequestId: req.params.id,
+          actorUserId: req.user.userId,
+          action: 'creator_signed',
+          note: null,
+          metadata: {},
+        });
+        return updated[0];
+      }, db);
+      if (!updatedWithdrawal) {
+        return res
+          .status(409)
+          .json({ error: 'Withdrawal request changed; refresh and try again.' });
       }
-      await logWithdrawalEvent(client, {
-        withdrawalRequestId: req.params.id,
-        actorUserId: req.user.userId,
-        action: 'creator_signed',
-        note: null,
-        metadata: {},
+      res.json(updatedWithdrawal);
+    } catch (err) {
+      logger.error('Creator approval recording failed', {
+        withdrawal_id: req.params.id,
+        error: err.message,
       });
-      return updated[0];
-    }, db);
-    if (!updatedWithdrawal) {
-      return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
+      res.status(500).json({ error: 'Could not record creator approval' });
     }
-    res.json(updatedWithdrawal);
-  } catch (err) {
-    logger.error('Creator approval recording failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
-    res.status(500).json({ error: 'Could not record creator approval' });
-  }
-})
+  })
 );
 
 const platformApproveHandler = asyncHandler(async (req, res) => {
@@ -810,188 +826,198 @@ const platformApproveHandler = asyncHandler(async (req, res) => {
   }
 
   return res.status(200).json(updatedWithdrawalRow || { status: 'submitted', tx_hash: txHash });
-})
-);
+});
 
 router.post('/:id/approve/platform', requireAuth, requirePlatformApprover, platformApproveHandler);
 // Alias for docs + issue acceptance criteria
 router.post('/:id/approve', requireAuth, requirePlatformApprover, platformApproveHandler);
 
-router.post('/:id/cancel', requireAuth, asyncHandler(async (req, res) => {
-  const reason = (req.body && req.body.reason) || 'Cancelled by creator';
+router.post(
+  '/:id/cancel',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const reason = (req.body && req.body.reason) || 'Cancelled by creator';
 
-  const { rows: requests } = await db.query(
-    `SELECT wr.*, c.creator_id
+    const { rows: requests } = await db.query(
+      `SELECT wr.*, c.creator_id
      FROM withdrawal_requests wr
      JOIN campaigns c ON c.id = wr.campaign_id
      WHERE wr.id = $1`,
-    [req.params.id]
-  );
-  if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
-  const requestRow = requests[0];
+      [req.params.id]
+    );
+    if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
+    const requestRow = requests[0];
 
-  const isOwner = await checkOwnerAccess(req, requestRow.campaign_id);
-  if (!isOwner) {
-    return res.status(403).json({ error: 'Only campaign owners can cancel this request' });
-  }
-  if (requestRow.status !== 'pending') {
-    return res.status(409).json({ error: 'Only pending requests can be cancelled' });
-  }
-  if (requestRow.creator_signed) {
-    return res.status(409).json({
-      error: 'Creator signature is already attached. Use platform reject flow instead of cancel.',
-    });
-  }
+    const isOwner = await checkOwnerAccess(req, requestRow.campaign_id);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only campaign owners can cancel this request' });
+    }
+    if (requestRow.status !== 'pending') {
+      return res.status(409).json({ error: 'Only pending requests can be cancelled' });
+    }
+    if (requestRow.creator_signed) {
+      return res.status(409).json({
+        error: 'Creator signature is already attached. Use platform reject flow instead of cancel.',
+      });
+    }
 
-  try {
-    const updatedWithdrawal = await withTransaction(async client => {
-      const { rows: updated } = await client.query(
-        `UPDATE withdrawal_requests
+    try {
+      const updatedWithdrawal = await withTransaction(async client => {
+        const { rows: updated } = await client.query(
+          `UPDATE withdrawal_requests
        SET status = 'denied', denial_reason = $1
        WHERE id = $2 AND status = 'pending' AND creator_signed = FALSE
        RETURNING *`,
-        [reason, req.params.id]
-      );
-      if (!updated.length) {
-        return null;
+          [reason, req.params.id]
+        );
+        if (!updated.length) {
+          return null;
+        }
+        await logWithdrawalEvent(client, {
+          withdrawalRequestId: req.params.id,
+          actorUserId: req.user.userId,
+          action: 'creator_cancelled',
+          note: reason,
+          metadata: {},
+        });
+        return updated[0];
+      }, db);
+      if (!updatedWithdrawal) {
+        return res
+          .status(409)
+          .json({ error: 'Withdrawal request changed; refresh and try again.' });
       }
-      await logWithdrawalEvent(client, {
-        withdrawalRequestId: req.params.id,
-        actorUserId: req.user.userId,
-        action: 'creator_cancelled',
-        note: reason,
-        metadata: {},
+      setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updatedWithdrawal));
+      res.json(updatedWithdrawal);
+    } catch (err) {
+      logger.error('Withdrawal cancellation failed', {
+        withdrawal_id: req.params.id,
+        error: err.message,
       });
-      return updated[0];
-    }, db);
-    if (!updatedWithdrawal) {
-      return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
+      res.status(500).json({ error: 'Could not cancel withdrawal request' });
     }
-    setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updatedWithdrawal));
-    res.json(updatedWithdrawal);
-  } catch (err) {
-    logger.error('Withdrawal cancellation failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
-    res.status(500).json({ error: 'Could not cancel withdrawal request' });
-  }
-})
+  })
 );
 
-router.post('/:id/reject', requireAuth, requirePlatformApprover, asyncHandler(async (req, res) => {
-  /**
-   * @openapi
-   * /api/withdrawals/{id}/reject:
-   *   post:
-   *     tags: [Withdrawals]
-   *     summary: Platform rejection
-   *     security:
-   *       - bearerAuth: []
-   *     parameters:
-   *       - in: path
-   *         name: id
-   *         required: true
-   *         schema: { type: string }
-   *     requestBody:
-   *       required: false
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             properties:
-   *               reason: { type: string }
-   *     responses:
-   *       200:
-   *         description: OK
-   *       401:
-   *         description: Unauthorized
-   *       403:
-   *         description: Forbidden
-   */
-  const reason = (req.body && req.body.reason) || 'Rejected by platform';
+router.post(
+  '/:id/reject',
+  requireAuth,
+  requirePlatformApprover,
+  asyncHandler(async (req, res) => {
+    /**
+     * @openapi
+     * /api/withdrawals/{id}/reject:
+     *   post:
+     *     tags: [Withdrawals]
+     *     summary: Platform rejection
+     *     security:
+     *       - bearerAuth: []
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: false
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               reason: { type: string }
+     *     responses:
+     *       200:
+     *         description: OK
+     *       401:
+     *         description: Unauthorized
+     *       403:
+     *         description: Forbidden
+     */
+    const reason = (req.body && req.body.reason) || 'Rejected by platform';
 
-  const { rows: requests } = await db.query('SELECT * FROM withdrawal_requests WHERE id = $1', [
-    req.params.id,
-  ]);
-  if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
-  const requestRow = requests[0];
+    const { rows: requests } = await db.query('SELECT * FROM withdrawal_requests WHERE id = $1', [
+      req.params.id,
+    ]);
+    if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
+    const requestRow = requests[0];
 
-  if (requestRow.status !== 'pending') {
-    return res.status(409).json({ error: 'Only pending requests can be rejected' });
-  }
-  if (!requestRow.creator_signed) {
-    return res
-      .status(409)
-      .json({ error: 'Creator must sign before platform can reject this release' });
-  }
-  if (requestRow.platform_signed) {
-    return res.status(409).json({ error: 'Platform has already signed; cannot reject' });
-  }
+    if (requestRow.status !== 'pending') {
+      return res.status(409).json({ error: 'Only pending requests can be rejected' });
+    }
+    if (!requestRow.creator_signed) {
+      return res
+        .status(409)
+        .json({ error: 'Creator must sign before platform can reject this release' });
+    }
+    if (requestRow.platform_signed) {
+      return res.status(409).json({ error: 'Platform has already signed; cannot reject' });
+    }
 
-  try {
-    const updatedWithdrawal = await withTransaction(async client => {
-      const { rows: updated } = await client.query(
-        `UPDATE withdrawal_requests
+    try {
+      const updatedWithdrawal = await withTransaction(async client => {
+        const { rows: updated } = await client.query(
+          `UPDATE withdrawal_requests
        SET status = 'denied', denial_reason = $1
        WHERE id = $2 AND status = 'pending' AND creator_signed = TRUE AND platform_signed = FALSE
        RETURNING *`,
-        [reason, req.params.id]
-      );
-      if (!updated.length) {
-        return null;
+          [reason, req.params.id]
+        );
+        if (!updated.length) {
+          return null;
+        }
+        await logWithdrawalEvent(client, {
+          withdrawalRequestId: req.params.id,
+          actorUserId: req.user.userId,
+          action: 'platform_rejected',
+          note: reason,
+          metadata: {},
+        });
+        return updated[0];
+      }, db);
+      if (!updatedWithdrawal) {
+        return res
+          .status(409)
+          .json({ error: 'Withdrawal request changed; refresh and try again.' });
       }
-      await logWithdrawalEvent(client, {
-        withdrawalRequestId: req.params.id,
-        actorUserId: req.user.userId,
-        action: 'platform_rejected',
-        note: reason,
-        metadata: {},
-      });
-      return updated[0];
-    }, db);
-    if (!updatedWithdrawal) {
-      return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
-    }
 
-    const { rows: cRows } = await db.query(
-      `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
+      const { rows: cRows } = await db.query(
+        `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
        FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
-      [requestRow.campaign_id]
-    );
-    if (cRows.length) {
-      sendWithdrawalRejectedEmail({
-        to: cRows[0].email,
-        withdrawalId: req.params.id,
-        creatorName: cRows[0].name,
-        amount: requestRow.amount,
-        asset: cRows[0].asset_type,
-        campaignTitle: cRows[0].title,
-        reason,
-      }).catch(err => logger.error('Withdrawal rejected email failed', { error: err.message }));
-      createNotification(cRows[0].creator_id, {
-        type: 'withdrawal_rejected',
-        title: 'Withdrawal rejected',
-        body: `Your withdrawal request was rejected. Reason: ${reason}`,
-        link: `/campaigns/${requestRow.campaign_id}`,
-      }).catch(err =>
-        logger.warn('Withdrawal rejected notification failed', {
-          withdrawal_id: req.params.id,
-          error: err.message,
-        })
+        [requestRow.campaign_id]
       );
-      emitWithdrawalUpdated(cRows[0].creator_id, updatedWithdrawal);
-    }
+      if (cRows.length) {
+        sendWithdrawalRejectedEmail({
+          to: cRows[0].email,
+          withdrawalId: req.params.id,
+          creatorName: cRows[0].name,
+          amount: requestRow.amount,
+          asset: cRows[0].asset_type,
+          campaignTitle: cRows[0].title,
+          reason,
+        }).catch(err => logger.error('Withdrawal rejected email failed', { error: err.message }));
+        createNotification(cRows[0].creator_id, {
+          type: 'withdrawal_rejected',
+          title: 'Withdrawal rejected',
+          body: `Your withdrawal request was rejected. Reason: ${reason}`,
+          link: `/campaigns/${requestRow.campaign_id}`,
+        }).catch(err =>
+          logger.warn('Withdrawal rejected notification failed', {
+            withdrawal_id: req.params.id,
+            error: err.message,
+          })
+        );
+        emitWithdrawalUpdated(cRows[0].creator_id, updatedWithdrawal);
+      }
 
-    res.json(updatedWithdrawal);
-  } catch (err) {
-    logger.error('Withdrawal rejection failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
-    res.status(500).json({ error: 'Could not reject withdrawal request' });
-  }
-})
+      res.json(updatedWithdrawal);
+    } catch (err) {
+      logger.error('Withdrawal rejection failed', {
+        withdrawal_id: req.params.id,
+        error: err.message,
+      });
+      res.status(500).json({ error: 'Could not reject withdrawal request' });
+    }
+  })
 );
 
 router.get(

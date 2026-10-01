@@ -26,6 +26,7 @@ const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const db = require('../config/database');
 const { body, param, validationResult } = require('express-validator');
 const logger = require('../config/logger');
+const asyncHandler = require('../utils/asyncHandler');
 
 const GOVERNANCE_PREPARE_TOKEN_TTL = '10m';
 
@@ -75,29 +76,36 @@ function verifyPrepareToken(token, expectedAction) {
  * GET /api/governance/proposals
  * List all proposals (active and historical)
  */
-router.get('/proposals', asyncHandler(async (req, res) => {
-  const proposals = await getAllProposals();
-  res.json({ proposals });
-}));
+router.get(
+  '/proposals',
+  asyncHandler(async (req, res) => {
+    const proposals = await getAllProposals();
+    res.json({ proposals });
+  })
+);
 
 /**
  * GET /api/governance/proposals/:id
  * Get single proposal detail with votes and outcome projection
  */
-router.get('/proposals/:id', param('id').isUUID(), asyncHandler(async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
+router.get(
+  '/proposals/:id',
+  param('id').isUUID(),
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
 
-  const proposal = await getProposalById(req.params.id);
+    const proposal = await getProposalById(req.params.id);
 
-  if (!proposal) {
-    return res.status(404).json({ error: 'Proposal not found' });
-  }
+    if (!proposal) {
+      return res.status(404).json({ error: 'Proposal not found' });
+    }
 
-  res.json({ proposal });
-}));
+    res.json({ proposal });
+  })
+);
 
 /**
  * POST /api/governance/proposals/:id/vote
@@ -348,65 +356,76 @@ router.post(
  * user-supplied signer, since execute_proposal isn't gated on a specific
  * caller's authorization (#802).
  */
-router.post('/proposals/:id/execute', requireAuth, param('id').isUUID(), asyncHandler(async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const result = await executeProposal(req.params.id, process.env.PLATFORM_SECRET_KEY);
-
-    // Invalidate fee cache after successful execution
-    if (result.status === 'executed') {
-      invalidateFeeCache();
+router.post(
+  '/proposals/:id/execute',
+  requireAuth,
+  param('id').isUUID(),
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    res.json({ success: true, execution: result });
-  } catch (error) {
-    logger.error('Failed to execute proposal', { error: error.message, proposalId: req.params.id });
+    try {
+      const result = await executeProposal(req.params.id, process.env.PLATFORM_SECRET_KEY);
 
-    if (
-      error.message.includes('not active') ||
-      error.message.includes('not found') ||
-      error.message.includes('deadline')
-    ) {
-      return res.status(400).json({ error: error.message });
+      // Invalidate fee cache after successful execution
+      if (result.status === 'executed') {
+        invalidateFeeCache();
+      }
+
+      res.json({ success: true, execution: result });
+    } catch (error) {
+      logger.error('Failed to execute proposal', {
+        error: error.message,
+        proposalId: req.params.id,
+      });
+
+      if (
+        error.message.includes('not active') ||
+        error.message.includes('not found') ||
+        error.message.includes('deadline')
+      ) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      throw error;
     }
-
-    throw error;
-  }
-})
+  })
 );
 
 /**
  * GET /api/governance/fee
  * Get current fee from cache + contract ID for verification
  */
-router.get('/fee', asyncHandler(async (req, res) => {
-  const feeInfo = await getFeeRegistryInfo();
-  res.json(feeInfo);
-}));
-    logger.error('Failed to get fee info', { error: error.message });
-    next(error);
-  }
-});
+router.get(
+  '/fee',
+  asyncHandler(async (req, res) => {
+    const feeInfo = await getFeeRegistryInfo();
+    res.json(feeInfo);
+  })
+);
 
 /**
  * GET /api/governance/user/token-balance
  * Get current user's governance token balance
  */
-router.get('/user/token-balance', requireAuth, attachWallet, asyncHandler(async (req, res) => {
-  const publicKey = req.wallet.publicKey;
-  const balance = await getUserTokenBalance(publicKey);
-  const canPropose = balance >= 1000;
+router.get(
+  '/user/token-balance',
+  requireAuth,
+  attachWallet,
+  asyncHandler(async (req, res) => {
+    const publicKey = req.wallet.publicKey;
+    const balance = await getUserTokenBalance(publicKey);
+    const canPropose = balance >= 1000;
 
-  res.json({
-    balance,
-    can_propose: canPropose,
-    min_required: 1000,
-  });
-}));
+    res.json({
+      balance,
+      can_propose: canPropose,
+      min_required: 1000,
+    });
+  })
+);
 
 function sendServiceError(res, next, error) {
   if (error.statusCode) {
@@ -423,42 +442,52 @@ function sendServiceError(res, next, error) {
  * Operators only. If a run is already in flight the trigger is deduplicated:
  * no new run is created and 409 returns the in-flight run.
  */
-router.post('/sync', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-  const { run, deduplicated } = await governanceSyncRuns.runGovernanceSync({
-    trigger: 'manual',
-    requestedBy: req.user.userId,
-    req,
-  });
-  if (deduplicated) {
-    return res.status(409).json({
-      success: false,
-      code: 'SYNC_ALREADY_RUNNING',
-      error: 'A governance sync is already running',
+router.post(
+  '/sync',
+  requireAuth,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { run, deduplicated } = await governanceSyncRuns.runGovernanceSync({
+      trigger: 'manual',
+      requestedBy: req.user.userId,
+      req,
+    });
+    if (deduplicated) {
+      return res.status(409).json({
+        success: false,
+        code: 'SYNC_ALREADY_RUNNING',
+        error: 'A governance sync is already running',
+        run,
+      });
+    }
+    const success = run.status === 'succeeded';
+    return res.status(success ? 200 : 502).json({
+      success,
+      message: success ? 'Proposal data synced' : 'Proposal data sync failed',
       run,
     });
-  }
-  const success = run.status === 'succeeded';
-  return res.status(success ? 200 : 502).json({
-    success,
-    message: success ? 'Proposal data synced' : 'Proposal data sync failed',
-    run,
-  });
-}));
+  })
+);
 
 /**
  * GET /api/governance/sync/runs?status=&trigger=&limit=&offset=
  * Paginated, filterable sync run history, newest first (operators only).
  */
-router.get('/sync/runs', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
-  const page = await governanceSyncRuns.listRuns({
-    status: req.query.status,
-    trigger: req.query.trigger,
-    limit,
-    offset,
-  });
-  return res.json(page);
-}));
+router.get(
+  '/sync/runs',
+  requireAuth,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+    const page = await governanceSyncRuns.listRuns({
+      status: req.query.status,
+      trigger: req.query.trigger,
+      limit,
+      offset,
+    });
+    return res.json(page);
+  })
+);
 
 /**
  * GET /api/governance/sync/runs/:id
@@ -470,16 +499,12 @@ router.get(
   requireAdmin,
   param('id').isUUID().withMessage('Invalid run ID'),
   asyncHandler(async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-      const run = await governanceSyncRuns.getRun(req.params.id);
-      if (!run)
-        return res.status(404).json({ error: 'Sync run not found', code: 'SYNC_RUN_NOT_FOUND' });
-      return res.json(run);
-    } catch (error) {
-      return sendServiceError(res, next, error);
-    }
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+    const run = await governanceSyncRuns.getRun(req.params.id);
+    if (!run)
+      return res.status(404).json({ error: 'Sync run not found', code: 'SYNC_RUN_NOT_FOUND' });
+    return res.json(run);
   })
 );
 
@@ -516,28 +541,38 @@ router.post(
  * GET /api/governance/user/vote-weight
  * Get the current user's effective vote weight, including delegated power (#735).
  */
-router.get('/user/vote-weight', requireAuth, attachWallet, asyncHandler(async (req, res) => {
-  const publicKey = req.wallet.publicKey;
-  const [weight, delegate] = await Promise.all([
-    getEffectiveVoteWeight(publicKey),
-    getDelegateForWallet(publicKey),
-  ]);
+router.get(
+  '/user/vote-weight',
+  requireAuth,
+  attachWallet,
+  asyncHandler(async (req, res) => {
+    const publicKey = req.wallet.publicKey;
+    const [weight, delegate] = await Promise.all([
+      getEffectiveVoteWeight(publicKey),
+      getDelegateForWallet(publicKey),
+    ]);
 
-  res.json({
-    effective_vote_weight: weight,
-    own_balance: await getUserTokenBalance(publicKey),
-    delegate_public_key: delegate ? delegate.delegate_public_key : null,
-  });
-}));
+    res.json({
+      effective_vote_weight: weight,
+      own_balance: await getUserTokenBalance(publicKey),
+      delegate_public_key: delegate ? delegate.delegate_public_key : null,
+    });
+  })
+);
 
 /**
  * GET /api/governance/delegations
  * Get the current user's active delegation edge (if any).
  */
-router.get('/delegations', requireAuth, attachWallet, asyncHandler(async (req, res) => {
-  const delegate = await getDelegateForWallet(req.wallet.publicKey);
-  res.json({ delegation: delegate });
-}));
+router.get(
+  '/delegations',
+  requireAuth,
+  attachWallet,
+  asyncHandler(async (req, res) => {
+    const delegate = await getDelegateForWallet(req.wallet.publicKey);
+    res.json({ delegation: delegate });
+  })
+);
 
 /**
  * POST /api/governance/delegations
@@ -554,22 +589,7 @@ router.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const delegation = await setVoteDelegation(
-      req.wallet.publicKey,
-      req.body.delegate_public_key
-    );
-    res.status(201).json({ success: true, delegation });
-  })
-);
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const delegation = await setVoteDelegation(
-      req.wallet.publicKey,
-      req.body.delegate_public_key
-    );
+    const delegation = await setVoteDelegation(req.wallet.publicKey, req.body.delegate_public_key);
     res.status(201).json({ success: true, delegation });
   })
 );
@@ -578,9 +598,14 @@ router.post(
  * DELETE /api/governance/delegations
  * Revoke the current user's vote delegation.
  */
-router.delete('/delegations', requireAuth, attachWallet, asyncHandler(async (req, res) => {
-  const removed = await revokeVoteDelegation(req.wallet.publicKey);
-  res.json({ success: true, revoked: removed });
-}));
+router.delete(
+  '/delegations',
+  requireAuth,
+  attachWallet,
+  asyncHandler(async (req, res) => {
+    const removed = await revokeVoteDelegation(req.wallet.publicKey);
+    res.json({ success: true, revoked: removed });
+  })
+);
 
 module.exports = router;
