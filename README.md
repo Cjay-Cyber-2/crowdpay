@@ -60,8 +60,14 @@ Backend  ───────────────────────�
 CrowdPay uses a strict SQL migration runner located in `backend/db/`. All migration files must be `.sql` files in `backend/db/migrations/`.
 
 - Run migrations: `npm run migrate`
+- Verify the complete schema: `npm run verify-schema`
 - Check migration status: `npm run migrate:status` (lists all migrations, including unsupported formats with explicit states)
 - Bootstrap schema and run migrations: `npm run migrate:fresh`
+
+To add a migration, create the next timestamped `.sql` file in
+`backend/db/migrations/`, include a reversible `.down.sql` when rollback is
+supported, and run `npm run migrate` followed by `npm run verify-schema` against
+a scratch database before committing it.
 
 ## Project Structure
 
@@ -212,6 +218,7 @@ npm run rotate-wallet-secrets:confirm --prefix backend
 | `npm run format:check` | Check backend formatting with Prettier |
 | `npm test` | Run backend tests (requires test-env.sh sourced) |
 | `npm run migrate` | Run pending database migrations |
+| `npm run verify-schema` | Verify every application table and compare a bootstrap against a saved schema snapshot |
 | `npm run migrate:status` | Show migration status |
 | `npm run migrate:down` | Rollback last migration (no .down.sql files exist yet) |
 | `npm run migrate:fresh` | Reset DB from schema.sql + run migrations + verify convergence |
