@@ -2,34 +2,72 @@ import { useState, useEffect } from 'react';
 import { api } from '../services/api';
 
 const LANGUAGE_LABELS = {
-  en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch',
-  it: 'Italiano', pt: 'Português', ru: 'Русский', ja: '日本語',
-  ko: '한국어', zh: '中文', ar: 'العربية', hi: 'हिन्दी',
-  bn: 'বাংলা', pa: 'ਪੰਜਾਬੀ', tr: 'Türkçe', nl: 'Nederlands',
-  pl: 'Polski', sv: 'Svenska', da: 'Dansk', fi: 'Suomi',
+  en: 'English',
+  es: 'Español',
+  fr: 'Français',
+  de: 'Deutsch',
+  it: 'Italiano',
+  pt: 'Português',
+  ru: 'Русский',
+  ja: '日本語',
+  ko: '한국어',
+  zh: '中文',
+  ar: 'العربية',
+  hi: 'हिन्दी',
+  bn: 'বাংলা',
+  pa: 'ਪੰਜਾਬੀ',
+  tr: 'Türkçe',
+  nl: 'Nederlands',
+  pl: 'Polski',
+  sv: 'Svenska',
+  da: 'Dansk',
+  fi: 'Suomi',
 };
 
-export default function LanguageToggle({ campaignId, defaultLanguage, defaultTitle, defaultDescription, onTranslationChange }) {
+export default function LanguageToggle({
+  campaignId,
+  defaultLanguage,
+  defaultTitle,
+  defaultDescription,
+  onTranslationChange,
+}) {
   const [translations, setTranslations] = useState([]);
-  const [activeLang, setActiveLang] = useState('en');
+  const [activeLang, setActiveLang] = useState(defaultLanguage || 'en');
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     if (!campaignId) return;
+    let cancelled = false;
     setLoading(true);
-    api.getCampaignTranslations(campaignId)
+    setLoadError(false);
+    api
+      .getCampaignTranslations(campaignId)
       .then((res) => {
-        const list = Array.isArray(res) ? res : (res?.data || []);
+        const list = Array.isArray(res) ? res : res?.data || [];
+        if (cancelled) return;
         setTranslations(list);
-        // If translations exist for the browser language, use that
-        const browserLang = navigator.language?.split('-')[0] || 'en';
-        if (list.some((t) => (t.locale || t.language) === browserLang)) {
-          setActiveLang(browserLang);
-        }
+        const available = new Set(list.map((t) => (t.locale || t.language)?.toLowerCase()));
+        const browserLang = (navigator.language || '')
+          .replace(/_/g, '-')
+          .split('-')[0]
+          .toLowerCase();
+        const preferredLang = (defaultLanguage || 'en')
+          .replace(/_/g, '-')
+          .split('-')[0]
+          .toLowerCase();
+        setActiveLang(available.has(browserLang) ? browserLang : preferredLang);
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [campaignId]);
+      .catch(() => {
+        if (!cancelled) setLoadError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId, defaultLanguage]);
 
   const activeTranslation = translations.find((t) => (t.locale || t.language) === activeLang);
 
@@ -38,15 +76,23 @@ export default function LanguageToggle({ campaignId, defaultLanguage, defaultTit
 
   // Notify parent of current translation state
   useEffect(() => {
-    onTranslationChange?.({ title: displayTitle, description: displayDescription, language: activeLang });
+    onTranslationChange?.({
+      title: displayTitle,
+      description: displayDescription,
+      language: activeLang,
+    });
   }, [displayTitle, displayDescription, activeLang, onTranslationChange]);
 
-  if (translations.length === 0 && !loading) return null;
+  if (translations.length === 0 && !loading && !loadError) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2 mb-4">
       {loading ? (
         <span className="text-xs text-gray-400">Loading translations...</span>
+      ) : loadError ? (
+        <span className="text-xs text-gray-500" role="status">
+          Translations unavailable; showing campaign default.
+        </span>
       ) : (
         <>
           <span className="text-xs text-gray-500 font-medium">🌐</span>

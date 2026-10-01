@@ -47,29 +47,45 @@ module.exports = {
   /** Scale factor between a decimal asset amount and the contract's i128 unit (7 decimal places, matching Stellar's native precision). */
   STELLAR_ASSET_DECIMALS_SCALE: 10_000_000,
 
-// --------------------------------------------------------------------------------------
-// Milestone limits
-// --------------------------------------------------------------------------------------
+  // --------------------------------------------------------------------------------------
+  // Milestone limits
+  // --------------------------------------------------------------------------------------
 
-/** Maximum number of milestones a campaign can define. */
-MILESTONE_LIMIT: 5,
+  /** Maximum number of milestones a campaign can define. */
+  MILESTONE_LIMIT: 5,
 
-/** Maximum file size (in bytes) for milestone evidence uploads (10 MB). */
-MILESTONE_EVIDENCE_MAX_FILE_SIZE: 10 * 1024 * 1024,
+  /** Maximum file size (in bytes) for milestone evidence uploads (10 MB). */
+  MILESTONE_EVIDENCE_MAX_FILE_SIZE: 10 * 1024 * 1024,
 
-// --------------------------------------------------------------------------------------
-// Upload limits
-// --------------------------------------------------------------------------------------
+  /**
+   * Hard floor for an auto-releasing milestone's dispute window (24 hours).
+   * Creators may shorten the platform default down to this, never below it, and
+   * the database enforces the same floor (20260929_milestone_auto_release.sql).
+   */
+  MILESTONE_AUTO_RELEASE_MIN_WINDOW_SECONDS: 24 * 60 * 60,
 
-/** Maximum file size (in bytes) for campaign cover image uploads (5 MB). */
-MAX_UPLOAD_SIZE: 5 * 1024 * 1024,
+  /**
+   * Platform default dispute window (72 hours). Overridable with
+   * MILESTONE_AUTO_RELEASE_DEFAULT_WINDOW_HOURS, but never below the floor above.
+   */
+  MILESTONE_AUTO_RELEASE_DEFAULT_WINDOW_SECONDS: 72 * 60 * 60,
 
-/** Allowed MIME types for campaign cover image uploads. */
-ALLOWED_UPLOAD_MIME_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
+  /** Validity window of an automated release transaction, so a stalled one expires quickly and can be reconciled. */
+  MILESTONE_AUTO_RELEASE_TX_TIMEOUT_S: 15 * 60,
 
-// --------------------------------------------------------------------------------------
-// Admin
-// --------------------------------------------------------------------------------------
+  // --------------------------------------------------------------------------------------
+  // Upload limits
+  // --------------------------------------------------------------------------------------
+
+  /** Maximum file size (in bytes) for campaign cover image uploads (5 MB). */
+  MAX_UPLOAD_SIZE: 5 * 1024 * 1024,
+
+  /** Allowed MIME types for campaign cover image uploads. */
+  ALLOWED_UPLOAD_MIME_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
+
+  // --------------------------------------------------------------------------------------
+  // Admin
+  // --------------------------------------------------------------------------------------
 
   /** Impersonation token TNL in seconds (15 minutes). */
   IMPERSONATION_TTL_SECONDS: 15 * 60,

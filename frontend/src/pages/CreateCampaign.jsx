@@ -42,7 +42,16 @@ function emptyMilestone() {
 }
 
 function emptyTier() {
-  return { title: '', description: '', min_amount: '', limit: '', estimated_delivery: '', nft_enabled: false, nft_metadata_url: '', nft_artwork_url: '' };
+  return {
+    title: '',
+    description: '',
+    min_amount: '',
+    limit: '',
+    estimated_delivery: '',
+    nft_enabled: false,
+    nft_metadata_url: '',
+    nft_artwork_url: '',
+  };
 }
 
 function milestonePercentTotal(milestones) {
@@ -91,7 +100,6 @@ export default function CreateCampaign() {
     },
     milestones: [],
     reward_tiers: [],
-
   });
   const [coverImageFile, setCoverImageFile] = useState(null);
   const [coverImagePreview, setCoverImagePreview] = useState('');
@@ -164,7 +172,8 @@ export default function CreateCampaign() {
 
     let cancelled = false;
 
-    api.getMyCampaignDraft()
+    api
+      .getMyCampaignDraft()
       .then((serverDraft) => {
         if (cancelled) return;
         const localDraft = loadDraft();
@@ -187,7 +196,9 @@ export default function CreateCampaign() {
         if (cancelled) return;
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [user, location.state?.prefill]);
 
   function restoreDraft() {
@@ -251,14 +262,16 @@ export default function CreateCampaign() {
   }, [user, updateUser]);
 
   useEffect(() => {
-    if (typeof api.getCampaignTemplates !== 'function') return;
     let cancelled = false;
-    api.getCampaignTemplates()
+    api
+      .getCampaignTemplates()
       .then((result) => {
         if (!cancelled) setTemplates(Array.isArray(result) ? result : []);
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function setField(field) {
@@ -512,9 +525,14 @@ export default function CreateCampaign() {
     if (!duplicateWarning) {
       setLoading(true);
       try {
-        const checkRes = await api.checkDuplicateCampaign({ title: form.title.trim(), description: form.description.trim() });
+        const checkRes = await api.checkDuplicateCampaign({
+          title: form.title.trim(),
+          description: form.description.trim(),
+        });
         if (checkRes.isDuplicate) {
-          setDuplicateWarning(`This campaign resembles an existing campaign: "${checkRes.similarTo}". It will be flagged for admin review.`);
+          setDuplicateWarning(
+            `This campaign resembles an existing campaign: "${checkRes.similarTo}". It will be flagged for admin review.`
+          );
           setLoading(false);
           return;
         }
@@ -551,7 +569,7 @@ export default function CreateCampaign() {
               title: milestone.title.trim(),
               description: milestone.description.trim(),
               release_percentage: Number(milestone.release_percentage),
-          }))
+            }))
           : undefined,
         reward_tiers: form.reward_tiers.length
           ? form.reward_tiers.map((tier) => ({
@@ -599,7 +617,7 @@ export default function CreateCampaign() {
 
       // Save contributor requirements if any were set (#689)
       const hasRequirements =
-        (form.min_reputation_score > 0) || (form.required_attestations ?? []).length > 0;
+        form.min_reputation_score > 0 || (form.required_attestations ?? []).length > 0;
       if (hasRequirements) {
         try {
           await api.setCampaignRequirements(campaign.id, {
@@ -680,7 +698,8 @@ export default function CreateCampaign() {
   const TIER_LIMITS = { none: 0, basic: 5000, standard: 50000, enhanced: Infinity };
   const tierLimit = TIER_LIMITS[verificationTier] ?? 0;
   const goalAmount = Number(form.target_amount) || 0;
-  const exceedsTierLimit = kycRequired && isVerified && goalAmount > tierLimit && tierLimit < Infinity;
+  const exceedsTierLimit =
+    kycRequired && isVerified && goalAmount > tierLimit && tierLimit < Infinity;
 
   if (kycRequired && !isVerified) {
     return (
@@ -868,23 +887,32 @@ export default function CreateCampaign() {
                 step="any"
                 value={form.target_amount}
                 onChange={setField('target_amount')}
-                placeholder="0.00"
+                placeholder={t('createCampaign.targetAmountPlaceholder')}
                 required
                 aria-required="true"
               />
               {kycRequired && isVerified && verificationTier !== 'enhanced' && (
                 <small style={{ color: 'var(--color-text-hint)', fontSize: '0.8rem' }}>
-                  Your {verificationTier} tier allows campaign goals up to ${tierLimit.toLocaleString()}.
+                  Your {verificationTier} tier allows campaign goals up to $
+                  {tierLimit.toLocaleString()}.
                   {verificationTier === 'basic' && ' Upgrade to Standard for up to $50,000.'}
                   {verificationTier === 'standard' && ' Upgrade to Enhanced for unlimited goals.'}
                 </small>
               )}
               {exceedsTierLimit && (
-                <div className="alert alert--warning" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
-                  <strong>Goal exceeds your {verificationTier} tier limit of ${tierLimit.toLocaleString()}.</strong>
+                <div
+                  className="alert alert--warning"
+                  style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}
+                >
+                  <strong>
+                    Goal exceeds your {verificationTier} tier limit of ${tierLimit.toLocaleString()}
+                    .
+                  </strong>
                   <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>
-                    {verificationTier === 'basic' && 'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'}
-                    {verificationTier === 'standard' && 'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'}
+                    {verificationTier === 'basic' &&
+                      'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'}
+                    {verificationTier === 'standard' &&
+                      'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'}
                   </p>
                 </div>
               )}
@@ -892,19 +920,28 @@ export default function CreateCampaign() {
 
             <div className="form-stack" style={{ marginTop: '1rem' }}>
               <label className="label-strong" htmlFor="cc-category">
-                Category (Optional)
+                {t('createCampaign.contributionLimits')}
               </label>
               <input
                 id="cc-category"
                 value={form.category}
                 onChange={setField('category')}
-                placeholder="e.g. tech, art, community"
+                placeholder={t('createCampaign.categoryPlaceholder')}
                 autoComplete="off"
               />
             </div>
 
-            <div style={{ marginTop: '1.25rem', border: '1px dashed var(--color-border)', padding: '1rem', borderRadius: '8px' }}>
-              <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.5rem' }}>Contribution limits (Optional)</h3>
+            <div
+              style={{
+                marginTop: '1.25rem',
+                border: '1px dashed var(--color-border)',
+                padding: '1rem',
+                borderRadius: '8px',
+              }}
+            >
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+                {t('createCampaign.contributionLimits')}
+              </h3>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div className="form-stack">
                   <label className="label-strong" htmlFor="cc-min-contrib">
@@ -918,7 +955,7 @@ export default function CreateCampaign() {
                     step="any"
                     value={form.min_contribution}
                     onChange={setField('min_contribution')}
-                    placeholder="e.g. 5"
+                    placeholder={t('createCampaign.minContributionPlaceholder')}
                   />
                 </div>
                 <div className="form-stack">
@@ -933,7 +970,7 @@ export default function CreateCampaign() {
                     step="any"
                     value={form.max_contribution}
                     onChange={setField('max_contribution')}
-                    placeholder="e.g. 500"
+                    placeholder={t('createCampaign.maxContributionPlaceholder')}
                   />
                 </div>
               </div>
@@ -975,9 +1012,9 @@ export default function CreateCampaign() {
             <fieldset className="form-stack" style={{ marginTop: '1rem' }}>
               <legend className="label-strong">Treasury mode</legend>
               <p style={{ color: 'var(--color-text-muted)', marginBottom: '0.65rem' }}>
-                Standard uses the two-of-two multisig wallet. Contract holds the funds in a
-                Soroban treasury that enforces your spending rules on-chain — the rules cannot be
-                changed once the campaign is created.
+                Standard uses the two-of-two multisig wallet. Contract holds the funds in a Soroban
+                treasury that enforces your spending rules on-chain — the rules cannot be changed
+                once the campaign is created.
               </p>
               <div role="radiogroup" aria-label="Treasury mode">
                 <label>
@@ -1055,9 +1092,7 @@ export default function CreateCampaign() {
                     type="text"
                     inputMode="decimal"
                     value={form.treasury_policy.requireAuditorForAbove}
-                    onChange={(e) =>
-                      updateTreasuryPolicy('requireAuditorForAbove', e.target.value)
-                    }
+                    onChange={(e) => updateTreasuryPolicy('requireAuditorForAbove', e.target.value)}
                   />
 
                   <label htmlFor="cc-auto-refund">
@@ -1065,15 +1100,13 @@ export default function CreateCampaign() {
                       id="cc-auto-refund"
                       type="checkbox"
                       checked={form.treasury_policy.autoRefundOnMiss}
-                      onChange={(e) =>
-                        updateTreasuryPolicy('autoRefundOnMiss', e.target.checked)
-                      }
+                      onChange={(e) => updateTreasuryPolicy('autoRefundOnMiss', e.target.checked)}
                     />
                     Refund contributors automatically if the goal is missed
                   </label>
                   <small style={{ color: 'var(--color-text-muted)' }}>
-                    Anyone can trigger the refund once the deadline passes, so contributors are
-                    not dependent on you or CrowdPay acting.
+                    Anyone can trigger the refund once the deadline passes, so contributors are not
+                    dependent on you or CrowdPay acting.
                   </small>
                 </div>
               )}
@@ -1108,7 +1141,7 @@ export default function CreateCampaign() {
                 type="text"
                 value={form.country}
                 onChange={setField('country')}
-                placeholder="e.g. United States, Kenya, Global"
+                placeholder={t('createCampaign.countryPlaceholder')}
                 maxLength={80}
               />
             </div>
@@ -1205,7 +1238,9 @@ export default function CreateCampaign() {
                   border: `2px dashed ${isDragOverCover ? 'var(--color-accent)' : 'var(--color-border-lightest)'}`,
                   borderRadius: '12px',
                   padding: '0.9rem',
-                  background: isDragOverCover ? 'var(--color-accent-lightest)' : 'var(--color-surface)',
+                  background: isDragOverCover
+                    ? 'var(--color-accent-lightest)'
+                    : 'var(--color-surface)',
                 }}
               >
                 <input
@@ -1336,14 +1371,33 @@ export default function CreateCampaign() {
               </div>
             </details>
 
-            <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--color-border-lightest)', paddingTop: '1.25rem' }}>
+            <div
+              style={{
+                marginTop: '1.5rem',
+                borderTop: '1px solid var(--color-border-lightest)',
+                paddingTop: '1.25rem',
+              }}
+            >
               <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.35rem' }}>
                 Translations (Optional)
               </h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '0.75rem' }}>
+              <p
+                style={{
+                  fontSize: '0.85rem',
+                  color: 'var(--color-text-muted)',
+                  marginBottom: '0.75rem',
+                }}
+              >
                 Provide translated versions of your campaign for international contributors.
               </p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                  marginBottom: '0.75rem',
+                }}
+              >
                 {SUPPORTED_LOCALES.map((loc) => {
                   const hasTranslation = Boolean(translations[loc.code]?.title);
                   const isActive = activeTranslationLocale === loc.code;
@@ -1371,9 +1425,17 @@ export default function CreateCampaign() {
                     marginBottom: '1rem',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '0.5rem',
+                    }}
+                  >
                     <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                      {SUPPORTED_LOCALES.find((l) => l.code === activeTranslationLocale)?.label} Translation
+                      {SUPPORTED_LOCALES.find((l) => l.code === activeTranslationLocale)?.label}{' '}
+                      Translation
                     </span>
                     {translations[activeTranslationLocale]?.title && (
                       <button
@@ -1398,7 +1460,9 @@ export default function CreateCampaign() {
                     )}
                   </div>
                   <div className="form-stack" style={{ marginBottom: '0.5rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Translated Title *</label>
+                    <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                      Translated Title *
+                    </label>
                     <input
                       type="text"
                       value={translations[activeTranslationLocale]?.title || ''}
@@ -1415,7 +1479,9 @@ export default function CreateCampaign() {
                     />
                   </div>
                   <div className="form-stack" style={{ marginBottom: '0.5rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Translated Description (optional)</label>
+                    <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                      Translated Description (optional)
+                    </label>
                     <textarea
                       value={translations[activeTranslationLocale]?.description || ''}
                       onChange={(e) =>
@@ -1559,7 +1625,7 @@ export default function CreateCampaign() {
                       <input
                         value={milestone.title}
                         onChange={(e) => setMilestoneField(index, 'title', e.target.value)}
-                        placeholder="e.g. Deliver prototype"
+                        placeholder={t('createCampaign.milestoneTitlePlaceholder')}
                       />
                     </div>
                     <div className="form-stack" style={{ marginTop: '0.75rem' }}>
@@ -1570,7 +1636,7 @@ export default function CreateCampaign() {
                         value={milestone.description}
                         onChange={(e) => setMilestoneField(index, 'description', e.target.value)}
                         rows={3}
-                        placeholder="Explain what contributors should expect before this release unlocks."
+                        placeholder={t('createCampaign.milestoneDescriptionPlaceholder')}
                       />
                     </div>
                     <div className="form-stack" style={{ marginTop: '0.75rem' }}>
@@ -1584,7 +1650,7 @@ export default function CreateCampaign() {
                         onChange={(e) =>
                           setMilestoneField(index, 'release_percentage', e.target.value)
                         }
-                        placeholder="25"
+                        placeholder={t('createCampaign.milestoneReleasePlaceholder')}
                       />
                     </div>
                   </div>
@@ -1604,46 +1670,85 @@ export default function CreateCampaign() {
             )}
 
             <div className="campaign-card" style={{ marginTop: '1.75rem', marginBottom: '1rem' }}>
-              <strong>Reward tiers <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></strong>
-              <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.88rem', lineHeight: 1.5, marginTop: '0.35rem' }}>
-                Offer backer perks at set contribution levels. Backers who contribute at or above a {"tier's"} minimum unlock it. Up to 10 tiers.
+              <strong>
+                {t('createCampaign.rewardTiers')}{' '}
+                <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                  {t('createCampaign.rewardTiersOptional')}
+                </span>
+              </strong>
+              <p
+                style={{
+                  color: 'var(--color-text-secondary)',
+                  fontSize: '0.88rem',
+                  lineHeight: 1.5,
+                  marginTop: '0.35rem',
+                }}
+              >
+                {t('createCampaign.rewardTiersHelp')}
               </p>
             </div>
 
             {form.reward_tiers.length === 0 ? (
               <div className="alert alert--info" style={{ marginBottom: '1rem' }}>
-                No reward tiers yet. Tiers are optional — you can launch without them.
+                {t('createCampaign.noRewardTiers')}
               </div>
             ) : (
               <div style={{ display: 'grid', gap: '0.85rem' }}>
                 {form.reward_tiers.map((tier, index) => (
                   <div key={index} className="campaign-card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <strong>Tier {index + 1}</strong>
-                      <button type="button" className="btn-secondary" onClick={() => removeTier(index)} style={{ fontSize: '0.8rem' }}>
-                        Remove
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: '0.75rem',
+                        alignItems: 'center',
+                        marginBottom: '0.5rem',
+                      }}
+                    >
+                      <strong>{t('createCampaign.tierLabel', { count: index + 1 })}</strong>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => removeTier(index)}
+                        style={{ fontSize: '0.8rem' }}
+                      >
+                        {t('createCampaign.removeTier')}
                       </button>
                     </div>
                     <div className="form-stack">
-                      <label className="label-strong">Title</label>
+                      <label className="label-strong">{t('createCampaign.tierTitle')}</label>
                       <input
                         value={tier.title}
                         onChange={(e) => setTierField(index, 'title', e.target.value)}
-                        placeholder="e.g. Early Bird"
+                        placeholder={t('createCampaign.tierTitlePlaceholder')}
                       />
                     </div>
                     <div className="form-stack" style={{ marginTop: '0.75rem' }}>
-                      <label className="label-strong">Description <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                      <label className="label-strong">
+                        {t('createCampaign.tierDescription')}{' '}
+                        <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                          {t('createCampaign.tierDescriptionOptional')}
+                        </span>
+                      </label>
                       <textarea
                         value={tier.description}
                         onChange={(e) => setTierField(index, 'description', e.target.value)}
                         rows={2}
-                        placeholder="What backers get at this tier."
+                        placeholder={t('createCampaign.tierDescriptionPlaceholder')}
                       />
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.75rem' }}>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '0.75rem',
+                        marginTop: '0.75rem',
+                      }}
+                    >
                       <div className="form-stack">
-                        <label className="label-strong">Minimum amount ({form.asset_type})</label>
+                        <label className="label-strong">
+                          {t('createCampaign.tierMinAmount', { asset: form.asset_type })}
+                        </label>
                         <input
                           type="number"
                           inputMode="decimal"
@@ -1651,11 +1756,16 @@ export default function CreateCampaign() {
                           step="any"
                           value={tier.min_amount}
                           onChange={(e) => setTierField(index, 'min_amount', e.target.value)}
-                          placeholder="e.g. 25"
+                          placeholder={t('createCampaign.tierMinAmountPlaceholder')}
                         />
                       </div>
                       <div className="form-stack">
-                        <label className="label-strong">Limit <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                        <label className="label-strong">
+                          {t('createCampaign.tierLimit')}{' '}
+                          <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                            {t('createCampaign.tierLimitOptional')}
+                          </span>
+                        </label>
                         <input
                           type="number"
                           inputMode="numeric"
@@ -1663,12 +1773,17 @@ export default function CreateCampaign() {
                           step="1"
                           value={tier.limit}
                           onChange={(e) => setTierField(index, 'limit', e.target.value)}
-                          placeholder="Unlimited"
+                          placeholder={t('createCampaign.tierLimitPlaceholder')}
                         />
                       </div>
                     </div>
                     <div className="form-stack" style={{ marginTop: '0.75rem' }}>
-                      <label className="label-strong">Estimated delivery <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                      <label className="label-strong">
+                        {t('createCampaign.tierEstimatedDelivery')}{' '}
+                        <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                          {t('createCampaign.tierEstimatedDeliveryOptional')}
+                        </span>
+                      </label>
                       <input
                         type="date"
                         min={today}
@@ -1676,34 +1791,65 @@ export default function CreateCampaign() {
                         onChange={(e) => setTierField(index, 'estimated_delivery', e.target.value)}
                       />
                     </div>
-                    <div className="campaign-card" style={{ marginTop: '0.75rem', padding: '0.85rem' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
+                    <div
+                      className="campaign-card"
+                      style={{ marginTop: '0.75rem', padding: '0.85rem' }}
+                    >
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          fontWeight: 700,
+                        }}
+                      >
                         <input
                           type="checkbox"
                           checked={Boolean(tier.nft_enabled)}
                           onChange={(e) => setTierField(index, 'nft_enabled', e.target.checked)}
                         />
-                        Issue an NFT proof of support for this tier
+                        {t('createCampaign.tierNftEnabled')}
                       </label>
-                      <p style={{ marginTop: '0.45rem', marginBottom: '0.65rem', fontSize: '0.84rem', color: 'var(--color-text-secondary)' }}>
-                        Contributors who unlock this tier will receive a unique NFT reward record linked to the campaign.
+                      <p
+                        style={{
+                          marginTop: '0.45rem',
+                          marginBottom: '0.65rem',
+                          fontSize: '0.84rem',
+                          color: 'var(--color-text-secondary)',
+                        }}
+                      >
+                        {t('createCampaign.tierNftHelp')}
                       </p>
                       {Boolean(tier.nft_enabled) && (
                         <div style={{ display: 'grid', gap: '0.65rem' }}>
                           <div className="form-stack">
-                            <label className="label-strong">Metadata URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <label className="label-strong">
+                              {t('createCampaign.tierMetadataUrl')}{' '}
+                              <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                                {t('createCampaign.tierMetadataUrlOptional')}
+                              </span>
+                            </label>
                             <input
                               value={tier.nft_metadata_url || ''}
-                              onChange={(e) => setTierField(index, 'nft_metadata_url', e.target.value)}
-                              placeholder="https://ipfs.io/ipfs/..."
+                              onChange={(e) =>
+                                setTierField(index, 'nft_metadata_url', e.target.value)
+                              }
+                              placeholder={t('createCampaign.tierMetadataUrlPlaceholder')}
                             />
                           </div>
                           <div className="form-stack">
-                            <label className="label-strong">Artwork URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <label className="label-strong">
+                              {t('createCampaign.tierArtworkUrl')}{' '}
+                              <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                                {t('createCampaign.tierArtworkUrlOptional')}
+                              </span>
+                            </label>
                             <input
                               value={tier.nft_artwork_url || ''}
-                              onChange={(e) => setTierField(index, 'nft_artwork_url', e.target.value)}
-                              placeholder="https://ipfs.io/ipfs/..."
+                              onChange={(e) =>
+                                setTierField(index, 'nft_artwork_url', e.target.value)
+                              }
+                              placeholder={t('createCampaign.tierArtworkUrlPlaceholder')}
                             />
                           </div>
                         </div>
@@ -1715,8 +1861,13 @@ export default function CreateCampaign() {
             )}
 
             {form.reward_tiers.length < 10 && (
-              <button type="button" className="btn-secondary" style={{ width: '100%', marginTop: '1rem' }} onClick={addTier}>
-                Add reward tier
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ width: '100%', marginTop: '1rem' }}
+                onClick={addTier}
+              >
+                {t('createCampaign.addRewardTier')}
               </button>
             )}
 
@@ -1736,7 +1887,13 @@ export default function CreateCampaign() {
               <strong style={{ display: 'block', marginBottom: '0.5rem' }}>
                 Contributor Requirements
               </strong>
-              <p style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', marginBottom: '1rem' }}>
+              <p
+                style={{
+                  fontSize: '0.85rem',
+                  color: 'var(--color-text-secondary)',
+                  marginBottom: '1rem',
+                }}
+              >
                 Optionally restrict who can contribute to this campaign. Contributors who don&apos;t
                 meet these requirements will be blocked.
               </p>
@@ -1757,7 +1914,13 @@ export default function CreateCampaign() {
                 }
                 style={{ width: '100%', margin: '0.5rem 0' }}
               />
-              <div style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  fontSize: '0.85rem',
+                  color: 'var(--color-text-secondary)',
+                  marginBottom: '1rem',
+                }}
+              >
                 Selected: <strong>{form.min_reputation_score ?? 0}</strong>
               </div>
 
@@ -1766,7 +1929,7 @@ export default function CreateCampaign() {
                 Required KYC attestations
               </label>
               {[
-                { value: 'kyc_basic',    label: 'KYC Basic'    },
+                { value: 'kyc_basic', label: 'KYC Basic' },
                 { value: 'kyc_standard', label: 'KYC Standard' },
                 { value: 'kyc_enhanced', label: 'KYC Enhanced' },
               ].map(({ value, label }) => {
@@ -1775,7 +1938,13 @@ export default function CreateCampaign() {
                 return (
                   <label
                     key={value}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', cursor: 'pointer' }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginBottom: '0.4rem',
+                      cursor: 'pointer',
+                    }}
                   >
                     <input
                       type="checkbox"
@@ -1794,9 +1963,13 @@ export default function CreateCampaign() {
                 );
               })}
 
-              {((form.min_reputation_score > 0) || (form.required_attestations ?? []).length > 0) && (
-                <div className="alert alert--info" style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}>
-                  Contributors without these requirements will be blocked from contributing to this campaign.
+              {(form.min_reputation_score > 0 || (form.required_attestations ?? []).length > 0) && (
+                <div
+                  className="alert alert--info"
+                  style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}
+                >
+                  Contributors without these requirements will be blocked from contributing to this
+                  campaign.
                 </div>
               )}
             </div>
@@ -1809,8 +1982,12 @@ export default function CreateCampaign() {
 
             {duplicateWarning && (
               <div className="alert alert--warning" style={{ marginTop: '1rem' }} role="alert">
-                <p><strong>Warning:</strong> {duplicateWarning}</p>
-                <p style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>You can still launch it, but it will be hidden until reviewed by an admin.</p>
+                <p>
+                  <strong>Warning:</strong> {duplicateWarning}
+                </p>
+                <p style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>
+                  You can still launch it, but it will be hidden until reviewed by an admin.
+                </p>
               </div>
             )}
 

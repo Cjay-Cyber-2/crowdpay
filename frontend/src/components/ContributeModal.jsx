@@ -1,4 +1,4 @@
-/* eslint-disable */
+/* eslint-disable react/prop-types -- Component has many props; prop-types not used in this codebase */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   getNetwork,
@@ -95,9 +95,7 @@ function matchTier(tiers, amount) {
   const numAmount = parseFloat(amount);
   if (isNaN(numAmount)) return null;
 
-  const eligible = tiers.filter(
-    (t) => numAmount >= parseFloat(t.min_amount) && !t.sold_out
-  );
+  const eligible = tiers.filter((t) => numAmount >= parseFloat(t.min_amount) && !t.sold_out);
 
   if (eligible.length === 0) return null;
 
@@ -142,7 +140,6 @@ export default function ContributeModal({
   const [phase, setPhase] = useState('form');
   const [result, setResult] = useState(null);
   const [feeBps, setFeeBps] = useState(0);
-  const [usdcIssuer, setUsdcIssuer] = useState('');
 
   useEffect(() => {
     api
@@ -154,6 +151,10 @@ export default function ContributeModal({
   const [freighterChecked, setFreighterChecked] = useState(false);
   const [existingContributions, setExistingContributions] = useState([]);
   const [displayName, setDisplayName] = useState('');
+  const [giftEnabled, setGiftEnabled] = useState(false);
+  const [giftRecipientName, setGiftRecipientName] = useState('');
+  const [giftRecipientEmail, setGiftRecipientEmail] = useState('');
+  const [giftMessage, setGiftMessage] = useState('');
   const anchorPopupRef = useRef(null);
   const submitLockRef = useRef(false);
   const activeSubmissionKeyRef = useRef(null);
@@ -170,21 +171,6 @@ export default function ContributeModal({
   const destAmount = amount.trim();
   const matchedTier = matchTier(tiers, destAmount);
   const [unlockedTier, setUnlockedTier] = useState(null);
-
-  const activeUsdcIssuer = usdcIssuer || import.meta.env.VITE_USDC_ISSUER || (
-    (import.meta.env.VITE_STELLAR_NETWORK || 'testnet') === 'public' || (import.meta.env.VITE_STELLAR_NETWORK || 'testnet') === 'mainnet'
-      ? 'GA5ZSEQAQM22CZF22KKOW3QJ24JEVH6KUC4WNZEX7S4EBAC6VHMCDVTY'
-      : 'GBBD472Q6TDQNCA24G2UG4M326T7J62TK2TYWNDSTXT5VBN2O4OXCT3U'
-  );
-
-  const getStellarPayUri = () => {
-    if (!destAmount || isNaN(parseFloat(destAmount))) return '#';
-    let uri = `stellar:pay?destination=${encodeURIComponent(campaign.wallet_public_key)}&amount=${encodeURIComponent(destAmount)}`;
-    if (sendAsset !== 'XLM') {
-      uri += `&asset_code=${encodeURIComponent(sendAsset)}&asset_issuer=${encodeURIComponent(activeUsdcIssuer)}`;
-    }
-    return uri;
-  };
 
   const kycRequired =
     user?.kyc_required_for_campaigns ??
@@ -436,6 +422,15 @@ export default function ContributeModal({
         amount: destAmount,
         send_asset: sendAsset,
         display_name: displayName.trim() || undefined,
+        ...(giftEnabled
+          ? {
+              gift: {
+                recipient_name: giftRecipientName.trim(),
+                recipient_email: giftRecipientEmail.trim(),
+                message: giftMessage.trim() || undefined,
+              },
+            }
+          : {}),
         device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
         ...(isPathPayment && previewToken
@@ -568,6 +563,15 @@ export default function ContributeModal({
         amount: destAmount,
         send_asset: effectiveSendAsset,
         display_name: displayName || undefined,
+        ...(giftEnabled
+          ? {
+              gift: {
+                recipient_name: giftRecipientName.trim(),
+                recipient_email: giftRecipientEmail.trim(),
+                message: giftMessage.trim() || undefined,
+              },
+            }
+          : {}),
         idempotency_key: activeSubmissionKeyRef.current,
       },
       referralQuery
@@ -646,7 +650,8 @@ export default function ContributeModal({
               onSuccess();
               return;
             }
-          } catch (err) {
+          } catch (_err) {
+            // eslint-disable-line no-unused-vars -- intentionally unused, just continue polling
             // Keep polling on error
           }
         }
@@ -824,9 +829,9 @@ export default function ContributeModal({
                       style={{ marginBottom: '1rem' }}
                       role="status"
                     >
-                      <strong>{selectedAnchor.name}.</strong> We'll open a secure identity and payment
-                      window. Once your payment clears, your contribution is submitted automatically —
-                      no further steps needed.
+                      <strong>{selectedAnchor.name}.</strong> We&apos;ll open a secure identity and
+                      payment window. Once your payment clears, your contribution is submitted
+                      automatically — no further steps needed.
                     </div>
                   )}
                 </>
@@ -935,17 +940,27 @@ export default function ContributeModal({
                 </span>
               </div>
 
-              {tiers.length > 0 && destAmount && Number(destAmount) > 0 && (
-                matchedTier ? (
-                  <div className="alert alert--success" style={{ marginBottom: '1rem', fontSize: '0.85rem' }} role="status">
-                    <strong>Unlocks tier:</strong> {matchedTier.title} (from {Number(matchedTier.min_amount).toLocaleString()} {campaign.asset_type})
+              {tiers.length > 0 &&
+                destAmount &&
+                Number(destAmount) > 0 &&
+                (matchedTier ? (
+                  <div
+                    className="alert alert--success"
+                    style={{ marginBottom: '1rem', fontSize: '0.85rem' }}
+                    role="status"
+                  >
+                    <strong>Unlocks tier:</strong> {matchedTier.title} (from{' '}
+                    {Number(matchedTier.min_amount).toLocaleString()} {campaign.asset_type})
                   </div>
                 ) : (
-                  <div className="alert alert--info" style={{ marginBottom: '1rem', fontSize: '0.85rem' }} role="status">
+                  <div
+                    className="alert alert--info"
+                    style={{ marginBottom: '1rem', fontSize: '0.85rem' }}
+                    role="status"
+                  >
                     This amount does not yet reach a reward tier.
                   </div>
-                )
-              )}
+                ))}
 
               <div className="form-stack" style={{ marginBottom: '1rem' }}>
                 <label className="label-strong" htmlFor="contrib-display-name">
@@ -966,24 +981,70 @@ export default function ContributeModal({
                 </span>
               </div>
 
+              {paymentMethod !== 'freighter' && (
+                <fieldset className="form-stack" style={{ marginBottom: '1rem' }}>
+                  <legend className="label-strong">Gift this contribution</legend>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={giftEnabled}
+                      onChange={event => setGiftEnabled(event.target.checked)}
+                    />{' '}
+                    Notify someone that you contributed in their honor
+                  </label>
+                  {giftEnabled && (
+                    <>
+                      <label htmlFor="gift-recipient-name">Recipient name</label>
+                      <input
+                        id="gift-recipient-name"
+                        value={giftRecipientName}
+                        onChange={event => setGiftRecipientName(event.target.value)}
+                        maxLength={100}
+                        required
+                      />
+                      <label htmlFor="gift-recipient-email">Recipient email</label>
+                      <input
+                        id="gift-recipient-email"
+                        type="email"
+                        value={giftRecipientEmail}
+                        onChange={event => setGiftRecipientEmail(event.target.value)}
+                        maxLength={254}
+                        required
+                      />
+                      <label htmlFor="gift-message">Message (optional)</label>
+                      <textarea
+                        id="gift-message"
+                        value={giftMessage}
+                        onChange={event => setGiftMessage(event.target.value)}
+                        maxLength={280}
+                      />
+                      <span style={styles.help}>
+                        The recipient is emailed only after the contribution is confirmed on Stellar.
+                      </span>
+                    </>
+                  )}
+                </fieldset>
+              )}
+
               {isPathPayment && (
                 <div className="alert alert--info" style={{ marginTop: '0.85rem' }} role="status">
-                  <strong>Automatic conversion.</strong> We'll convert your {effectiveSendAsset} to{' '}
-                  {campaign.asset_type} when you confirm. Fees are minimal.
+                  <strong>Automatic conversion.</strong> We&apos;ll convert your{' '}
+                  {effectiveSendAsset} to {campaign.asset_type} when you confirm. Fees are minimal.
                 </div>
               )}
 
               {paymentMethod === 'freighter' && (
                 <div className="alert alert--info" style={{ marginTop: '0.85rem' }} role="status">
-                  <strong>You stay in control.</strong> We'll prepare the payment, your wallet will ask
-                  you to approve it, and only your approval comes back to us — we never see your keys.
+                  <strong>You stay in control.</strong> We&apos;ll prepare the payment, your wallet
+                  will ask you to approve it, and only your approval comes back to us — we never see
+                  your keys.
                 </div>
               )}
 
               {paymentMethod === 'anchor' && selectedAnchor && (
                 <div className="alert alert--info" style={{ marginTop: '0.85rem' }} role="status">
-                  <strong>{selectedAnchor.name}.</strong> Your bank or card payment is verified, then
-                  your contribution is submitted for you automatically.
+                  <strong>{selectedAnchor.name}.</strong> Your bank or card payment is verified,
+                  then your contribution is submitted for you automatically.
                 </div>
               )}
 
@@ -1013,10 +1074,7 @@ export default function ContributeModal({
                     </div>
                   )}
                   {!quoteLoading && quote && rankedPaths.length > 1 && (
-                    <div
-                      className="form-stack"
-                      style={{ marginTop: '0.5rem' }}
-                    >
+                    <div className="form-stack" style={{ marginTop: '0.5rem' }}>
                       <label
                         className="label-strong"
                         htmlFor="contrib-path-select"
@@ -1090,38 +1148,38 @@ export default function ContributeModal({
                   disabled={loading || quoteLoading || (isPathPayment && (!!quoteError || !quote))}
                   aria-busy={loading ? 'true' : 'false'}
                 >
-                  {loading
-                    ? (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '0.5rem',
-                          }}
-                        >
-                          <span
-                            aria-hidden="true"
-                            style={{
-                              width: '0.95rem',
-                              height: '0.95rem',
-                              border: '2px solid rgba(255, 255, 255, 0.35)',
-                              borderTopColor: '#fff',
-                              borderRadius: '50%',
-                              animation: 'spin 0.8s linear infinite',
-                              flexShrink: 0,
-                            }}
-                          />
-                          <span>{loadingLabel}</span>
-                        </span>
-                      )
-                    : quoteLoading
-                      ? 'Loading quote…'
-                      : paymentMethod === 'anchor'
-                        ? 'Open deposit flow'
-                        : paymentMethod === 'freighter'
-                          ? 'Review in Freighter'
-                          : 'Confirm payment'}
+                  {loading ? (
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.5rem',
+                      }}
+                    >
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: '0.95rem',
+                          height: '0.95rem',
+                          border: '2px solid rgba(255, 255, 255, 0.35)',
+                          borderTopColor: '#fff',
+                          borderRadius: '50%',
+                          animation: 'spin 0.8s linear infinite',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span>{loadingLabel}</span>
+                    </span>
+                  ) : quoteLoading ? (
+                    'Loading quote…'
+                  ) : paymentMethod === 'anchor' ? (
+                    'Open deposit flow'
+                  ) : paymentMethod === 'freighter' ? (
+                    'Review in Freighter'
+                  ) : (
+                    'Confirm payment'
+                  )}
                 </button>
               </div>
             </form>
@@ -1235,13 +1293,22 @@ export default function ContributeModal({
               Your contribution is on its way. It usually confirms in just a few seconds.
             </p>
             {unlockedTier && (
-              <p className="alert alert--success" style={{ marginBottom: '1rem', fontSize: '0.9rem' }} role="status">
+              <p
+                className="alert alert--success"
+                style={{ marginBottom: '1rem', fontSize: '0.9rem' }}
+                role="status"
+              >
                 🎉 {"You've"} unlocked: <strong>{unlockedTier.title}</strong>
               </p>
             )}
             {result?.nft_reward && (
-              <p className="alert alert--info" style={{ marginBottom: '1rem', fontSize: '0.9rem' }} role="status">
-                NFT reward record is being prepared for this contribution. Its status will appear in your profile once available.
+              <p
+                className="alert alert--info"
+                style={{ marginBottom: '1rem', fontSize: '0.9rem' }}
+                role="status"
+              >
+                NFT reward record is being prepared for this contribution. Its status will appear in
+                your profile once available.
               </p>
             )}
             {(result?.tx_hash || result?.conversion_quote || result?.anchor_transaction_id) && (
@@ -1253,7 +1320,13 @@ export default function ContributeModal({
                 </summary>
                 <div style={{ marginTop: '0.6rem' }}>
                   {result?.tx_hash && (
-                    <p style={{ fontSize: '0.875rem', marginBottom: '0.5rem', wordBreak: 'break-all' }}>
+                    <p
+                      style={{
+                        fontSize: '0.875rem',
+                        marginBottom: '0.5rem',
+                        wordBreak: 'break-all',
+                      }}
+                    >
                       <strong>Transaction</strong>{' '}
                       <a
                         href={stellarExpertTxUrl(result.tx_hash)}
@@ -1303,47 +1376,60 @@ export default function ContributeModal({
               </h3>
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                 <button
-  type="button"
-  className="btn-secondary"
-  style={{ flex: 1, fontSize: '0.85rem' }}
-  aria-label="Share on X"
-  onClick={() => {
-    const shareUrl = window.location.href;
-    const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
-    const daysLeft = Math.max(0, Math.ceil((new Date(campaign.end_date) - new Date()) / (1000 * 60 * 60 * 24)));
-    const text = encodeURIComponent(`Back ${campaign.title} on CrowdPay — ${pct}% funded, ${daysLeft} days left. ${shareUrl} #CrowdPay`);
-    window.open(`https://twitter.com/intent/tweet?text=${text}`, '_blank');
-  }}
->
-  Share on X
-</button>
-<button
-  type="button"
-  className="btn-secondary"
-  style={{ flex: 1, fontSize: '0.85rem' }}
-  aria-label="Share on WhatsApp"
-  onClick={() => {
-    const shareUrl = window.location.href;
-    const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
-    const text = encodeURIComponent(`Hey! Check out this campaign on CrowdPay: ${campaign.title}. They're ${pct}% funded and need your help. ${shareUrl}`);
-    window.open(`https://wa.me/?text=${text}`, '_blank');
-  }}
->
-  WhatsApp
-</button>
-<button
-  type="button"
-  className="btn-secondary"
-  style={{ flex: 1, fontSize: '0.85rem' }}
-  aria-label="Share on LinkedIn"
-  onClick={() => {
-    const shareUrl = window.location.href;
-    const linkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
-    window.open(linkedInUrl, '_blank');
-  }}
->
-  LinkedIn
-</button>
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1, fontSize: '0.85rem' }}
+                  aria-label="Share on X"
+                  onClick={() => {
+                    const shareUrl = window.location.href;
+                    const pct = Math.min(
+                      100,
+                      (campaign.raised_amount / campaign.target_amount) * 100
+                    ).toFixed(1);
+                    const daysLeft = Math.max(
+                      0,
+                      Math.ceil((new Date(campaign.end_date) - new Date()) / (1000 * 60 * 60 * 24))
+                    );
+                    const text = encodeURIComponent(
+                      `Back ${campaign.title} on CrowdPay — ${pct}% funded, ${daysLeft} days left. ${shareUrl} #CrowdPay`
+                    );
+                    window.open(`https://twitter.com/intent/tweet?text=${text}`, '_blank');
+                  }}
+                >
+                  Share on X
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1, fontSize: '0.85rem' }}
+                  aria-label="Share on WhatsApp"
+                  onClick={() => {
+                    const shareUrl = window.location.href;
+                    const pct = Math.min(
+                      100,
+                      (campaign.raised_amount / campaign.target_amount) * 100
+                    ).toFixed(1);
+                    const text = encodeURIComponent(
+                      `Hey! Check out this campaign on CrowdPay: ${campaign.title}. They're ${pct}% funded and need your help. ${shareUrl}`
+                    );
+                    window.open(`https://wa.me/?text=${text}`, '_blank');
+                  }}
+                >
+                  WhatsApp
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1, fontSize: '0.85rem' }}
+                  aria-label="Share on LinkedIn"
+                  onClick={() => {
+                    const shareUrl = window.location.href;
+                    const linkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
+                    window.open(linkedInUrl, '_blank');
+                  }}
+                >
+                  LinkedIn
+                </button>
               </div>
             </div>
 
@@ -1395,4 +1481,3 @@ const styles = {
     marginTop: '1.1rem',
   },
 };
-

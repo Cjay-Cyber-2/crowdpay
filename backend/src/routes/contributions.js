@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
 const { contributionValidation, validateRequest } = require('../middleware/validation');
@@ -11,7 +11,7 @@ const pathPaymentPreviewService = require('../services/pathPaymentPreview');
 const contributionDiagnostics = require('../services/contributionDiagnostics');
 const { resolveReferralLink } = require('../services/referral');
 const { getReferralCodeFromRequest } = require('../services/referralService');
-const { reserveTierSlot } = require('../services/rewardTierService');
+const { reserveTierSlot, reserveInventory, claimInventory, releaseInventory, createFulfillment } = require('../services/rewardTierService');
 const { assertUserKycVerified } = require('../services/kycService');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { assertContributorMeetsRequirements } = require('../services/contributorIdentityService');
@@ -28,7 +28,10 @@ function mapContributionGateError(err, res) {
       missing: err.missing || [],
     });
   }
-  if (err.statusCode === 503 && (err.code === 'IDENTITY_UNAVAILABLE' || err.code === 'ATTESTATION_UNAVAILABLE')) {
+  if (
+    err.statusCode === 503 &&
+    (err.code === 'IDENTITY_UNAVAILABLE' || err.code === 'ATTESTATION_UNAVAILABLE')
+  ) {
     return res.status(503).json({ error: err.message, code: err.code });
   }
   throw err;
@@ -73,6 +76,7 @@ router.post(
       preview_token,
       selected_path_index,
       idempotency_key,
+      gift,
     } = req.body;
     const userId = req.user.userId;
 
@@ -97,7 +101,11 @@ router.post(
       await assertContributionPolicy(campaign, amount, walletPublicKey);
       await assertContributorMeetsRequirements(walletPublicKey, campaign_id);
     } catch (err) {
-      if (err.code === 'CONTRIBUTOR_REQUIREMENTS_NOT_MET' || err.code === 'IDENTITY_UNAVAILABLE' || err.code === 'ATTESTATION_UNAVAILABLE') {
+      if (
+        err.code === 'CONTRIBUTOR_REQUIREMENTS_NOT_MET' ||
+        err.code === 'IDENTITY_UNAVAILABLE' ||
+        err.code === 'ATTESTATION_UNAVAILABLE'
+      ) {
         return mapContributionGateError(err, res);
       }
       return res.status(err.statusCode || 400).json({ error: err.message });
@@ -110,19 +118,12 @@ router.post(
     }
 
     // Cross-asset contributions may arrive with a single-use preview token from
-    // POST /api/campaigns/:id/contribution/preview. When present it is
-    // validated + redeemed and the exact approved route is used; callers
-    // without one fall back to quoting the best route inline (#688).
+    // POST /api/campaigns/:id/contribution/preview. The token is redeemed exactly
+    // once, inside the contribution transaction below (#900): redeeming it here
+    // as well destroyed it before the transaction ran, so every quoted
+    // cross-asset contribution failed with PREVIEW_EXPIRED and the approved
+    // route was never applied.
     let previewPath = null;
-    if (sendAsset !== campaign.asset_type && preview_token) {
-      previewPath = await pathPaymentPreviewService.consumeContributionPreview({
-        previewToken: preview_token,
-        campaignId: campaign_id,
-        sendAsset,
-        amount,
-        selectedPathIndex: typeof selected_path_index === 'number' ? selected_path_index : Number(selected_path_index),
-      });
-    }
 
     const client = await db.connect();
     let result;
@@ -131,23 +132,26 @@ router.post(
 
       if (tier_id) {
         const reserved = await reserveTierSlot(client, { tierId: tier_id, campaignId: campaign_id });
-        if (!reserved) {
-          await client.query('ROLLBACK');
-          return res.status(409).json({ error: 'Reward tier is no longer available' });
-        }
+        if (!reserved) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Reward tier is no longer available' }); }
+        const invOk = await reserveInventory(client, { tierId: tier_id, contributionId: idempotency_key || campaign_id, quantity: 1 });
+        if (!invOk) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'REWARD_TIER_SOLD_OUT' }); }
       }
 
-      // Cross-asset contributions may arrive with a single-use preview token from
-      // POST /api/campaigns/:id/contribution/preview. When present it is
-      // validated + redeemed and the exact approved route is used; callers
-      // without one fall back to quoting the best route inline (#688).
+      // Redeem the single-use preview token exactly once, inside the
+      // transaction, and thread the approved route into submission so the
+      // max_send_amount the contributor agreed to is actually enforced (#900).
+      // Callers without a token fall back to quoting the best route inline in
+      // buildContributionIntent (#688).
       if (sendAsset !== campaign.asset_type && preview_token) {
         previewPath = await pathPaymentPreviewService.consumeContributionPreview({
           previewToken: preview_token,
           campaignId: campaign_id,
           sendAsset,
           amount,
-          selectedPathIndex: typeof selected_path_index === 'number' ? selected_path_index : Number(selected_path_index),
+          selectedPathIndex:
+            typeof selected_path_index === 'number'
+              ? selected_path_index
+              : Number(selected_path_index),
         });
       }
 
@@ -160,10 +164,12 @@ router.post(
         amount,
         sendAsset,
         displayName: display_name,
+        gift,
         referralCode,
         referralLinkCode: referralLink?.code,
         referralLinkId: referralLink?.id,
         tierId: tier_id,
+        previewPath,
         idempotencyKey: idempotency_key,
         client,
       });
@@ -199,7 +205,7 @@ router.post(
       return res.status(401).json({ error: 'Embed token required' });
     }
     /*
-     * Distinguish JWT-only format/expiry verification (embedTokenJwtService) 
+     * Distinguish JWT-only format/expiry verification (embedTokenJwtService)
      * from DB-backed revocation/existence checks (embedTokenService).
      * First verify token format and signature/expiry via JWT service.
      */
@@ -242,7 +248,11 @@ router.post(
       await assertUserKycVerified(userId);
       await assertContributorMeetsRequirements(user.wallet_public_key, campaign_id);
     } catch (err) {
-      if (err.code === 'CONTRIBUTOR_REQUIREMENTS_NOT_MET' || err.code === 'IDENTITY_UNAVAILABLE' || err.code === 'ATTESTATION_UNAVAILABLE') {
+      if (
+        err.code === 'CONTRIBUTOR_REQUIREMENTS_NOT_MET' ||
+        err.code === 'IDENTITY_UNAVAILABLE' ||
+        err.code === 'ATTESTATION_UNAVAILABLE'
+      ) {
         return mapContributionGateError(err, res);
       }
       if (err.code === 'KYC_REQUIRED' || err.statusCode === 403) {
@@ -365,3 +375,5 @@ router.get(
 );
 
 module.exports = router;
+
+

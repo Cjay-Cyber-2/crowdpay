@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
+const withTransaction = require('../utils/withTransaction');
 const channels = require('./notificationChannels');
 const fcmPush = require('./fcmPushService');
 
@@ -66,7 +67,11 @@ async function deliverChannel(userId, channel, settings, message) {
     try {
       return await fcmPush.sendToUser(userId, message);
     } catch (err) {
-      logger.error('FCM notification delivery failed', { user_id: userId, type: message.type, error: err.message });
+      logger.error('FCM notification delivery failed', {
+        user_id: userId,
+        type: message.type,
+        error: err.message,
+      });
       return false;
     }
   }
@@ -133,7 +138,11 @@ async function createNotification(userId, { type, title, body, link }, { nowHour
       }
     }
   } catch (err) {
-    logger.error('Notification channel fan-out failed', { user_id: userId, type, error: err.message });
+    logger.error('Notification channel fan-out failed', {
+      user_id: userId,
+      type,
+      error: err.message,
+    });
   }
 }
 
@@ -142,17 +151,15 @@ async function createNotification(userId, { type, title, body, link }, { nowHour
  */
 async function createNotificationsBulk(userIds, message, options = {}) {
   if (!Array.isArray(userIds) || !userIds.length) return;
-  await Promise.all(userIds.map((userId) => createNotification(userId, message, options)));
+  await Promise.all(userIds.map(userId => createNotification(userId, message, options)));
 }
 
 async function flushQuietHours(options = {}) {
   const nowHour = options.nowHour !== undefined ? options.nowHour : new Date().getHours();
-  const client = await db.connect();
   let rows = [];
-  try {
-    await client.query('BEGIN');
+  await withTransaction(async client => {
     const res = await client.query(
-    `SELECT q.id, q.user_id, q.channel, q.type, q.title, q.body, q.link,
+      `SELECT q.id, q.user_id, q.channel, q.type, q.title, q.body, q.link,
             s.push_token, s.slack_webhook_url, s.discord_webhook_url, s.sms_phone_number,
             s.quiet_hours_start, s.quiet_hours_end,
             EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = q.user_id) AS push_enabled
@@ -162,19 +169,16 @@ async function flushQuietHours(options = {}) {
      ORDER BY q.created_at ASC
        LIMIT 200
        FOR UPDATE SKIP LOCKED`
-  );
+    );
     rows = res.rows;
     if (rows.length > 0) {
-      const rowIds = rows.map((r) => r.id);
-      await client.query('UPDATE notification_queue SET flushed_at = NOW() WHERE id = ANY($1::uuid[])', [rowIds]);
+      const rowIds = rows.map(r => r.id);
+      await client.query(
+        'UPDATE notification_queue SET flushed_at = NOW() WHERE id = ANY($1::uuid[])',
+        [rowIds]
+      );
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    client.release();
-    throw err;
-  }
-  client.release();
+  }, db);
 
   // Group deliverable rows by (user_id, channel) so we can batch them into a
   // single digest message per user/channel pair.
@@ -215,8 +219,11 @@ async function flushQuietHours(options = {}) {
     const lastItem = group.items[group.items.length - 1];
     const digestMessage = {
       type: lastItem.type,
-      title: `${group.items.length} notifications: ${group.items.map((i) => i.title).join('; ')}`,
-      body: group.items.map((i) => i.body).filter(Boolean).join('\\n'),
+      title: `${group.items.length} notifications: ${group.items.map(i => i.title).join('; ')}`,
+      body: group.items
+        .map(i => i.body)
+        .filter(Boolean)
+        .join('\n'),
       link: lastItem.link,
       items: group.items,
     };
@@ -231,7 +238,6 @@ async function flushQuietHours(options = {}) {
         error: err.message,
       });
     }
-
   }
 
   return deliveredCount;

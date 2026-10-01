@@ -27,7 +27,9 @@ const CSRF_MUTATING_METHODS = new Set(['post', 'put', 'patch', 'delete']);
 
 function readCookie(name) {
   if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]*)`));
+  const match = document.cookie.match(
+    new RegExp(`(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]*)`)
+  );
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -45,7 +47,8 @@ apiClient.interceptors.request.use((config) => {
 // Idempotent GET requests that fail with a network error while the app is
 // offline are queued here and replayed when connectivity returns
 // (NetworkStatusContext calls retryQueuedRequests on reconnect).
-const retryQueue = [];
+const MAX_RETRY_QUEUE_SIZE = 100;
+const retryQueue = new Map();
 
 apiClient.interceptors.response.use(
   (response) => response,
@@ -53,18 +56,44 @@ apiClient.interceptors.response.use(
     const config = error.config;
     if (!error.response && config && config.method === 'get' && !config._retried) {
       config._retried = true;
-      retryQueue.push(() => apiClient.request(config));
+      const key = JSON.stringify([config.baseURL, config.url, config.params]);
+      return new Promise((resolve, reject) => {
+        const existing = retryQueue.get(key);
+        if (existing) {
+          existing.waiters.push({ resolve, reject });
+          return;
+        }
+        if (retryQueue.size >= MAX_RETRY_QUEUE_SIZE) {
+          const oldestKey = retryQueue.keys().next().value;
+          const oldest = retryQueue.get(oldestKey);
+          retryQueue.delete(oldestKey);
+          oldest.waiters.forEach((waiter) => waiter.reject(normalizeError(oldest.error)));
+        }
+        retryQueue.set(key, { config, error, waiters: [{ resolve, reject }] });
+      });
     }
     return Promise.reject(normalizeError(error));
   }
 );
 
 export function retryQueuedRequests() {
-  const queue = [...retryQueue];
-  retryQueue.length = 0;
-  for (const replay of queue) {
-    replay().catch(() => { /* replayed request failed again — drop it */ });
-  }
+  const queue = [...retryQueue.values()];
+  retryQueue.clear();
+  return Promise.allSettled(
+    queue.map(({ config, waiters }) =>
+      apiClient.request(config).then(
+        (response) => {
+          waiters.forEach((waiter) => waiter.resolve(response));
+          return response;
+        },
+        (error) => {
+          const normalized = normalizeError(error);
+          waiters.forEach((waiter) => waiter.reject(normalized));
+          throw normalized;
+        }
+      )
+    )
+  );
 }
 
 function normalizeError(error) {
@@ -122,6 +151,23 @@ export const api = {
   },
   async setCampaignRequirements(campaignId, data) {
     const res = await apiClient.post(`/campaigns/${campaignId}/requirements`, data);
+    return res.data;
+  },
+  // --- Sponsor matching pledges (#948) ---
+  async getCampaignMatchingProgress(campaignId) {
+    const res = await apiClient.get(`/campaigns/${campaignId}/matches`);
+    return res.data;
+  },
+  async createSponsorMatchingPledge(campaignId, data) {
+    const res = await apiClient.post(`/campaigns/${campaignId}/matches`, data);
+    return res.data;
+  },
+  async completeSponsorMatchingPledge(campaignId, matchId) {
+    const res = await apiClient.patch(`/campaigns/${campaignId}/matches/${matchId}/complete`);
+    return res.data;
+  },
+  async getMySponsorMatches() {
+    const res = await apiClient.get('/user/sponsor-matches');
     return res.data;
   },
   async approveMilestone(id) {
@@ -217,8 +263,14 @@ export const api = {
     const res = await apiClient.get(`/creator/campaigns/${campaignId}`);
     return res.data;
   },
+  async getCampaignBackerInsights(campaignId) {
+    const res = await apiClient.get(`/campaigns/${campaignId}/backer-insights`);
+    return res.data;
+  },
   async exportCreatorCampaignData(campaignId) {
-    const res = await apiClient.get(`/creator/campaigns/${campaignId}/export`, { responseType: 'blob' });
+    const res = await apiClient.get(`/creator/campaigns/${campaignId}/export`, {
+      responseType: 'blob',
+    });
     const disposition = res.headers['content-disposition'] || '';
     let filename = 'campaign-export.csv';
     const match = disposition.match(/filename="?([^"]+)"?/);
@@ -226,7 +278,9 @@ export const api = {
     return { blob: res.data, filename };
   },
   async exportCampaignReport(campaignId) {
-    const res = await apiClient.get(`/campaigns/${campaignId}/report/export`, { responseType: 'blob' });
+    const res = await apiClient.get(`/campaigns/${campaignId}/report/export`, {
+      responseType: 'blob',
+    });
     const disposition = res.headers['content-disposition'] || '';
     let filename = 'campaign-report.pdf';
     const match = disposition.match(/filename="?([^"]+)"?/);
@@ -238,7 +292,9 @@ export const api = {
     return res.data;
   },
   async updateVelocityThreshold(campaignId, threshold) {
-    const res = await apiClient.patch(`/creator/campaigns/${campaignId}/velocity/threshold`, { threshold });
+    const res = await apiClient.patch(`/creator/campaigns/${campaignId}/velocity/threshold`, {
+      threshold,
+    });
     return res.data;
   },
   async getNotificationPreferences() {
@@ -284,7 +340,10 @@ export const api = {
   },
 
   async exportAdminAuditLogsCsv(params) {
-    const res = await apiClient.get('/admin/audit-logs/export.csv', { params, responseType: 'blob' });
+    const res = await apiClient.get('/admin/audit-logs/export.csv', {
+      params,
+      responseType: 'blob',
+    });
     const disposition = res.headers['content-disposition'] || '';
     let filename = 'audit-logs.csv';
     const match = disposition.match(/filename="?([^"]+)"?/);
@@ -293,7 +352,10 @@ export const api = {
   },
 
   async exportAdminAuditLogsJson(params) {
-    const res = await apiClient.get('/admin/audit-logs/export.json', { params, responseType: 'blob' });
+    const res = await apiClient.get('/admin/audit-logs/export.json', {
+      params,
+      responseType: 'blob',
+    });
     const disposition = res.headers['content-disposition'] || '';
     let filename = 'audit-logs.json';
     const match = disposition.match(/filename="?([^"]+)"?/);
@@ -342,6 +404,14 @@ export const api = {
   },
   async getExportDownloadUrl(exportId) {
     const res = await apiClient.get(`/users/me/exports/${exportId}/download`);
+    return res.data;
+  },
+  async getContributorPrivacy() {
+    const res = await apiClient.get('/users/me/contributor-privacy');
+    return res.data;
+  },
+  async updateContributorPrivacy(data) {
+    const res = await apiClient.patch('/users/me/contributor-privacy', data);
     return res.data;
   },
   async listCampaignPools(campaignId) {
@@ -427,13 +497,24 @@ export const api = {
   // --- Subscriptions (Freighter support #821) ---
   async prepareSubscription(campaignId, { amountPerPeriod, asset, periodMonths, totalPeriods }) {
     const res = await apiClient.post(`/campaigns/${campaignId}/subscriptions/prepare`, {
-      amountPerPeriod, asset, periodMonths, totalPeriods,
+      amountPerPeriod,
+      asset,
+      periodMonths,
+      totalPeriods,
     });
     return res.data;
   },
-  async submitSubscription(campaignId, { unsignedXdr, signedXdr, amountPerPeriod, asset, periodMonths, totalPeriods }) {
+  async submitSubscription(
+    campaignId,
+    { unsignedXdr, signedXdr, amountPerPeriod, asset, periodMonths, totalPeriods }
+  ) {
     const res = await apiClient.post(`/campaigns/${campaignId}/subscriptions/submit`, {
-      unsignedXdr, signedXdr, amountPerPeriod, asset, periodMonths, totalPeriods,
+      unsignedXdr,
+      signedXdr,
+      amountPerPeriod,
+      asset,
+      periodMonths,
+      totalPeriods,
     });
     return res.data;
   },
@@ -507,7 +588,9 @@ export const api = {
     return res.data;
   },
   async voteGovernanceProposal(proposalId, inFavor) {
-    const res = await apiClient.post(`/governance/proposals/${proposalId}/vote`, { in_favor: inFavor });
+    const res = await apiClient.post(`/governance/proposals/${proposalId}/vote`, {
+      in_favor: inFavor,
+    });
     return res.data;
   },
   async executeGovernanceProposal(proposalId) {
@@ -526,11 +609,24 @@ export const api = {
   getGovernanceSyncRun: (runId) =>
     apiClient.get(`/governance/sync/runs/${runId}`).then((r) => r.data),
 
-  triggerGovernanceSync: () =>
-    apiClient.post('/governance/sync').then((r) => r.data),
+  triggerGovernanceSync: () => apiClient.post('/governance/sync').then((r) => r.data),
 
   retryGovernanceSyncRun: (runId) =>
     apiClient.post(`/governance/sync/runs/${runId}/retry`).then((r) => r.data),
+
+  // --- Campaign templates ---
+  getCampaignTemplates: () => apiClient.get('/campaign-templates').then((r) => r.data),
+
+  adminGetCampaignTemplates: () => apiClient.get('/campaign-templates/admin').then((r) => r.data),
+
+  adminCreateCampaignTemplate: (data) =>
+    apiClient.post('/campaign-templates/admin', data).then((r) => r.data),
+
+  adminUpdateCampaignTemplate: (id, data) =>
+    apiClient.patch(`/campaign-templates/admin/${id}`, data).then((r) => r.data),
+
+  adminDeleteCampaignTemplate: (id) =>
+    apiClient.delete(`/campaign-templates/admin/${id}`).then((r) => r.data),
 
   getEligibleRefunds: (campaignId) =>
     apiClient.get(`/campaigns/${campaignId}/refunds/eligible`).then((r) => r.data),
@@ -540,5 +636,56 @@ export const api = {
 
   processRefund: (campaignId, payload) =>
     apiClient.post(`/campaigns/${campaignId}/refunds`, payload).then((r) => r.data),
-};
 
+  // --- Per-campaign contributor communication preferences (#961) ---
+  // Effective preferences; the API resolves to the defaults when the
+  // contributor has never overridden anything for this campaign, so callers
+  // never have to handle a missing record.
+  getCampaignCommunicationPreferences: (campaignId) =>
+    apiClient.get(`/campaigns/${campaignId}/communication-preferences`).then((r) => r.data),
+
+  // Partial patch: only the channels present in `patch` are written.
+  setCampaignCommunicationPreferences: (campaignId, patch) =>
+    apiClient.put(`/campaigns/${campaignId}/communication-preferences`, patch).then((r) => r.data),
+
+  resetCampaignCommunicationPreferences: (campaignId) =>
+    apiClient.delete(`/campaigns/${campaignId}/communication-preferences`).then((r) => r.data),
+
+  getCommunicationPreferenceChannels: () =>
+    apiClient.get('/campaigns/communication-preferences/channels').then((r) => r.data),
+
+  getMyCommunicationPreferences: () =>
+    apiClient.get('/users/me/communication-preferences').then((r) => r.data),
+
+  resetMyCommunicationPreferences: () =>
+    apiClient.delete('/users/me/communication-preferences').then((r) => r.data),
+
+  // --- Beneficiary outcome surveys (#960) ---
+  // Public read. Returns `{ survey, response_count, my_response }`; `survey` is
+  // null (not an error) when the campaign has no survey yet.
+  getOutcomeSurvey: (campaignId) =>
+    apiClient.get(`/campaigns/${campaignId}/outcome-survey`).then((r) => r.data),
+
+  createOutcomeSurvey: (campaignId, payload) =>
+    apiClient.post(`/campaigns/${campaignId}/outcome-survey`, payload).then((r) => r.data),
+
+  updateOutcomeSurvey: (campaignId, payload) =>
+    apiClient.put(`/campaigns/${campaignId}/outcome-survey`, payload).then((r) => r.data),
+
+  openOutcomeSurvey: (campaignId, payload = {}) =>
+    apiClient.post(`/campaigns/${campaignId}/outcome-survey/open`, payload).then((r) => r.data),
+
+  closeOutcomeSurvey: (campaignId) =>
+    apiClient.post(`/campaigns/${campaignId}/outcome-survey/close`).then((r) => r.data),
+
+  submitOutcomeSurveyResponse: (campaignId, answers) =>
+    apiClient
+      .post(`/campaigns/${campaignId}/outcome-survey/respond`, { answers })
+      .then((r) => r.data),
+
+  getOutcomeSurveyResults: (campaignId) =>
+    apiClient.get(`/campaigns/${campaignId}/outcome-survey/results`).then((r) => r.data),
+
+  getOutcomeSurveyEvents: (campaignId) =>
+    apiClient.get(`/campaigns/${campaignId}/outcome-survey/events`).then((r) => r.data),
+};

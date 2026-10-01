@@ -17,7 +17,7 @@ const { SLIPPAGE_BPS } = require('../config/constants');
 const { toStroops, fromStroops, mulBpsCeil } = require('../utils/stroops');
 const { buildReferralMemo } = require('./referral');
 
-const CONTRACT_MODE_CROSS_ASSET_MESSAGE = (assetType) =>
+const CONTRACT_MODE_CROSS_ASSET_MESSAGE = assetType =>
   `Cross-asset contributions aren't supported for this campaign's contract-backed treasury yet — please contribute in ${assetType} directly.`;
 
 function buildContributionMemo(campaignId) {
@@ -74,7 +74,9 @@ async function buildContributionIntent({
       destAmount: amount,
     });
     if (!paths.length) {
-      const error = new Error(`No conversion path found for ${sendAsset} -> ${campaign.asset_type}`);
+      const error = new Error(
+        `No conversion path found for ${sendAsset} -> ${campaign.asset_type}`
+      );
       error.statusCode = 422;
       throw error;
     }
@@ -136,6 +138,8 @@ async function submitCustodialContribution({
   intentOverride,
   anchorMetadata,
   displayName,
+  attributionMode,
+  gift,
   referralCode,
   referralLinkCode,
   referralLinkId,
@@ -178,6 +182,16 @@ async function submitCustodialContribution({
 
   const metadata = {
     ...intent.flowMetadata,
+    attribution_mode: attributionMode || 'public',
+    ...(gift
+      ? {
+          gift: {
+            recipient_name: gift.recipient_name,
+            recipient_email: gift.recipient_email,
+            message: gift.message || null,
+          },
+        }
+      : {}),
     platform_fee_amount: 0,
     ip_address: ipAddress || null,
     device_fingerprint: deviceFingerprint || null,
@@ -186,7 +200,9 @@ async function submitCustodialContribution({
     contract_mode: contractMode,
     ...(contractMode ? { deposit_amount_stroops: amountStroops.toString() } : {}),
     ...(referralCode ? { referral_code: referralCode } : {}),
-    ...(referralLinkId ? { referral_link_id: referralLinkId, referral_link_code: referralLinkCode } : {}),
+    ...(referralLinkId
+      ? { referral_link_id: referralLinkId, referral_link_code: referralLinkCode }
+      : {}),
     ...(anchorMetadata
       ? {
           anchor: {
@@ -270,7 +286,7 @@ async function submitCustodialContribution({
       const depositResult = await withDecryptedWalletSecret(
         walletSecretEncrypted,
         { userId, walletPublicKey },
-        async (senderSecret) => {
+        async senderSecret => {
           await ensureCustodialAccountFundedAndTrusted({
             publicKey: walletPublicKey,
             secret: senderSecret,
@@ -288,7 +304,7 @@ async function submitCustodialContribution({
       const preparedTransaction = await withDecryptedWalletSecret(
         walletSecretEncrypted,
         { userId, walletPublicKey },
-        async (senderSecret) => {
+        async senderSecret => {
           await ensureCustodialAccountFundedAndTrusted({
             publicKey: walletPublicKey,
             secret: senderSecret,
@@ -325,7 +341,7 @@ async function submitCustodialContribution({
         const retried = await withDecryptedWalletSecret(
           walletSecretEncrypted,
           { userId, walletPublicKey },
-          async (senderSecret) => prepareClassic(senderSecret, freshSendMax)
+          async senderSecret => prepareClassic(senderSecret, freshSendMax)
         );
         unsignedXdr = retried.unsignedXdr;
         signedXdr = retried.signedXdr;
@@ -376,7 +392,7 @@ async function submitCustodialContribution({
           const retried = await withDecryptedWalletSecret(
             walletSecretEncrypted,
             { userId, walletPublicKey },
-            async (senderSecret) =>
+            async senderSecret =>
               prepareSignedContributionPathPayment({
                 senderSecret,
                 destinationPublicKey: campaign.wallet_public_key,
